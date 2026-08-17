@@ -27,6 +27,10 @@ partial class MiaoNetContext
     public event PacketPlayerNotificationHandler<PacketPlayerChannelMovedNotification>? PlayerChannelMoved;
     public event Action<OnlineChannel>? ChannelCreated;
     public event Action<OnlineChannel>? ChannelRemoved;
+    public event Action<PacketWatchSnapshotRequest>? WatchSnapshotRequested;
+    public event Action<PacketWatchSceneDeltaNotification>? WatchSceneDeltaReceived;
+    public event Action<PacketWatchProducerStop>? WatchProducerStopped;
+    public event Action<PacketWatchEnded>? WatchEnded;
 
     private void RegisterPacketHandlers(PacketHandlerRegister r)
     {
@@ -50,6 +54,10 @@ partial class MiaoNetContext
         r.Register<PacketPlayerChannelMovedResponse>(HandlePacket);
         r.Register<PacketPlayerChannelMovedNotification>(HandlePacket);
         r.Register<PacketChannelCreated>(HandlePacket);
+        r.Register<PacketWatchSnapshotRequest>(HandlePacket);
+        r.Register<PacketWatchSceneDeltaNotification>(HandlePacket);
+        r.Register<PacketWatchProducerStop>(HandlePacket);
+        r.Register<PacketWatchEnded>(HandlePacket);
     }
 
     private void HandlePacket(PacketDisconnected packet)
@@ -283,5 +291,29 @@ partial class MiaoNetContext
         EnsureState();
         var channel = ClientState.OnNewChannelCreated(packet.ChannelID, packet.ChannelInfo);
         ChannelCreated?.Invoke(channel);
+    }
+
+    private void HandlePacket(PacketWatchSnapshotRequest packet)
+    {
+        EnsureState();
+        WatchSnapshotRequested?.Invoke(packet);
+    }
+
+    private void HandlePacket(PacketWatchSceneDeltaNotification packet)
+    {
+        EnsureState();
+        WatchSceneDeltaReceived?.Invoke(packet);
+    }
+
+    private void HandlePacket(PacketWatchProducerStop packet)
+    {
+        EnsureState();
+        WatchProducerStopped?.Invoke(packet);
+    }
+
+    private void HandlePacket(PacketWatchEnded packet)
+    {
+        EnsureState();
+        WatchEnded?.Invoke(packet);
     }
 }

@@ -59,6 +59,7 @@ public sealed class MiaoNetModule : EverestModule
         Logger.SetLogLevel(LT.MiaoNetPacketReading, LogLevel.Verbose);
         Logger.SetLogLevel(LT.MiaoNetEmoteComponent, LogLevel.Verbose);
         Logger.SetLogLevel(LT.MiaoNetEmoteData, LogLevel.Verbose);
+        Logger.SetLogLevel(LT.MiaoNetWatch, LogLevel.Verbose);
 #endif
         using (new DetourConfigContext(RootConfig).Use())
         {
@@ -69,6 +70,7 @@ public sealed class MiaoNetModule : EverestModule
             Everest.Events.Level.OnLoadLevel += Level_OnLoadLevel;
             IL.Celeste.Level.Update += Level_Update;
             SpriteIDTracker.Load();
+            TouchSwitchIDTracker.Load();
             IL.Celeste.Leader.GainFollower += Leader_GainFollower;
             On.Celeste.Overworld.Begin += Overworld_Begin;
             On.Celeste.Player.Added += Player_Added;
@@ -107,6 +109,7 @@ public sealed class MiaoNetModule : EverestModule
         Everest.Events.Level.OnLoadLevel -= Level_OnLoadLevel;
         IL.Celeste.Level.Update -= Level_Update;
         SpriteIDTracker.Unload();
+        TouchSwitchIDTracker.Unload();
         IL.Celeste.Leader.GainFollower -= Leader_GainFollower;
         On.Celeste.Overworld.Begin -= Overworld_Begin;
         On.Celeste.Player.Added -= Player_Added;
