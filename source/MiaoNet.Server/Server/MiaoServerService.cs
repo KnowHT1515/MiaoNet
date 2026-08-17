@@ -35,6 +35,7 @@ public sealed partial class MiaoServerService : BackgroundService, IMiaoServerSe
 
     private readonly ReaderWriterLockSlim stateLock;
     private readonly ServerState serverState;
+    private readonly WatchSessionRegistry watchSessions;
 
     public ServerState ServerState => serverState;
 
@@ -51,6 +52,7 @@ public sealed partial class MiaoServerService : BackgroundService, IMiaoServerSe
     {
         stateLock = new();
         serverState = new();
+        watchSessions = new();
 
         PacketHandlerRegister register = new();
         RegisterPacketHandlers(register);
@@ -167,6 +169,8 @@ public sealed partial class MiaoServerService : BackgroundService, IMiaoServerSe
 
             // exchange data with this player
             await newConnection.HandleClientConnectAsync();
+
+            await EndWatchSessionsForPlayerAsync(newConnection, WatchEndReason.TargetDisconnected, true);
 
             // TODO don't do removing stuffs here
             using (stateLock.AcquireWriteLock())
