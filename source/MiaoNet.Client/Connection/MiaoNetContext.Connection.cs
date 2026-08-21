@@ -11,6 +11,102 @@ namespace Celeste.Mod.MiaoNet;
 // TODO this is ugly, we need a refactor on this
 partial class MiaoNetContext
 {
+#if PACKET_TRACING
+    private const int MaxPacketTraceLength = 4096;
+
+    private static void TracePacketSafely(
+        IContextualPacket packet,
+        System.Text.Json.JsonSerializerOptions options
+    )
+    {
+        string typeName = packet.GetType().ToString();
+        if (typeName.Contains("Frame", StringComparison.Ordinal)
+            || typeName.Contains("PingData", StringComparison.Ordinal)
+            || typeName.Contains("UpdateOnlineStatus", StringComparison.Ordinal)
+            || typeName.Contains("PlayedAudio", StringComparison.Ordinal)
+            || typeName.Contains("PacketPing", StringComparison.Ordinal))
+            return;
+
+        try
+        {
+            string json = SerializePacketTrace(packet, options);
+            if (json.Length > MaxPacketTraceLength)
+                json = string.Concat(json.AsSpan(0, MaxPacketTraceLength), "... [truncated]");
+            Console.WriteLine($"== Type: {packet.GetType()} ==");
+            Console.WriteLine(json);
+        }
+        catch
+        {
+            // Packet tracing is diagnostic only and must never terminate the receive loop.
+        }
+    }
+
+    private static string SerializePacketTrace(
+        IContextualPacket packet,
+        System.Text.Json.JsonSerializerOptions options
+    )
+        => packet switch
+        {
+            PacketWatchStartResponse response => System.Text.Json.JsonSerializer.Serialize(new
+            {
+                response.RequestID,
+                response.Result,
+                response.SessionID,
+                Snapshot = response.Snapshot is null ? null : SummarizeSnapshot(response.Snapshot),
+            }, options),
+            PacketWatchSnapshotResponse response => System.Text.Json.JsonSerializer.Serialize(new
+            {
+                response.RequestID,
+                response.Result,
+                Snapshot = response.Snapshot is null ? null : SummarizeSnapshot(response.Snapshot),
+            }, options),
+            PacketWatchSceneDelta packetDelta => System.Text.Json.JsonSerializer.Serialize(new
+            {
+                Delta = SummarizeDelta(packetDelta.Delta),
+            }, options),
+            PacketWatchSceneDeltaNotification notification => System.Text.Json.JsonSerializer.Serialize(new
+            {
+                notification.SessionID,
+                notification.TargetPlayerID,
+                Delta = SummarizeDelta(notification.Delta),
+            }, options),
+            _ => System.Text.Json.JsonSerializer.Serialize((object)packet, options),
+        };
+
+    private static object SummarizeSnapshot(WatchSceneSnapshot snapshot)
+        => new
+        {
+            snapshot.Sequence,
+            snapshot.Location,
+            FlagCount = snapshot.Flags.Count,
+            TouchSwitchCount = snapshot.ActiveTouchSwitchIDs.Count,
+            EntityStateCount = snapshot.EntityStates.Count,
+            EntityKinds = CountEntityKinds(snapshot.EntityStates.Select(state => state.Key.Kind)),
+        };
+
+    private static object SummarizeDelta(WatchSceneDelta delta)
+        => new
+        {
+            delta.Sequence,
+            delta.Location,
+            AddedFlagCount = delta.AddedFlags.Count,
+            RemovedFlagCount = delta.RemovedFlags.Count,
+            delta.RequiresRoomReload,
+            delta.HasTouchSwitchState,
+            TouchSwitchCount = delta.ActiveTouchSwitchIDs.Count,
+            delta.EntityStateMode,
+            EntityStateCount = delta.EntityStates.Count,
+            EntityEventCount = delta.EntityEvents.Count,
+            EntityKinds = CountEntityKinds(delta.EntityStates.Select(state => state.Key.Kind)),
+            EventKinds = CountEntityKinds(delta.EntityEvents.Select(entityEvent => entityEvent.Key.Kind)),
+        };
+
+    private static IReadOnlyDictionary<WatchEntityKind, int> CountEntityKinds(
+        IEnumerable<WatchEntityKind> kinds
+    )
+        => kinds.GroupBy(kind => kind).ToDictionary(group => group.Key, group => group.Count());
+#endif
+
     private void ConnectionThread(object? param)
     {
         var connectionToken = (CancellationToken)param!;
@@ -251,22 +347,7 @@ partial class MiaoNetContext
                             if (!HandleDirectPacket(packet))
                                 receiveQueue.Enqueue(packet);
 #if PACKET_TRACING
-                            string typeName = packet.GetType().ToString();
-                            if (
-                                !typeName.Contains("Frame", StringComparison.Ordinal)
-                                && !typeName.Contains("PingData", StringComparison.Ordinal)
-                                && !typeName.Contains("UpdateOnlineStatus", StringComparison.Ordinal)
-                                && !typeName.Contains("PlayedAudio", StringComparison.Ordinal)
-                                && !typeName.Contains("PacketPing", StringComparison.Ordinal)
-                            )
-                            {
-                                var pColor = Console.ForegroundColor;
-                                Console.ForegroundColor = ConsoleColor.Green;
-                                Console.WriteLine($"== Type: {packet.GetType()} ==");
-                                Console.ForegroundColor = ConsoleColor.DarkGreen;
-                                Console.WriteLine(System.Text.Json.JsonSerializer.Serialize((object)packet, options));
-                                Console.ForegroundColor = pColor;
-                            }
+                            TracePacketSafely(packet, options);
 #endif
                         }
                     }

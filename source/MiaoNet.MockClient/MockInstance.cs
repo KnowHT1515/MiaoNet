@@ -43,7 +43,11 @@ public sealed class MockInstance : IPacketSerializationContext, IDisposable
         while (true)
         {
             position = new(position.X + Random.Shared.Next(0, 30) / 60f, position.Y);
-            PlayerStateDelta d = new(position, "idle", 0, Vector2.One, PlayerStateDelta.FrameFlags.None, PlayerStateFlags.FacingLeft);
+            PlayerStateDelta d = new(
+                position,
+                "idle", 0, Vector2.One,
+                PlayerStateDelta.FrameFlags.None, PlayerStateFlags.FacingLeft
+            );
             connection.QueuePacket(new PacketPlayerFrame(d));
 
             await Task.Delay((int)(1f / 60f * 1000f));

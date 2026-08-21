@@ -22,6 +22,8 @@ public sealed class MiaoNetGhost : MiaoNetGhostEntity
     private Vector2 lastPosition;
 
     private VertexLight? vertexLight;
+    private VertexLight? theoHoldableLight;
+    private bool watchFocus;
 
     private Facings facing;
     private int dashes;
@@ -48,6 +50,7 @@ public sealed class MiaoNetGhost : MiaoNetGhostEntity
     private HoldableType lastHoladableType;
     private Sprite? holdableSprite;
     private Vector2? holdableOffset;
+    private Sprite? redBoosterSprite;
 
     private IdleHover? idleHover;
 
@@ -118,9 +121,10 @@ public sealed class MiaoNetGhost : MiaoNetGhostEntity
 
         Add(playerHair);
         Add(playerSprite);
+        UpdateRedBoosted(stateFlags.HasFlag(PlayerStateFlags.RedBoosted));
         ResetHair();
 
-        UpdateLightSettings(MiaoNetModule.Settings.PlayerLight);
+        UpdateLightSettings(MiaoNetModule.Settings.PlayerLight || watchFocus);
 
         pDashA = new(Player.P_DashA);
         pDashB = new(Player.P_DashB);
@@ -144,6 +148,23 @@ public sealed class MiaoNetGhost : MiaoNetGhostEntity
         };
         Add(selfHoldable);
 
+        HoldableInfo initialHoldable = initialState.HoldableInfo;
+        if (initialHoldable.Type == HoldableType.Jelly)
+        {
+            UpdateHoldable(
+                initialHoldable.Type,
+                initialHoldable.Offset,
+                initialHoldable.Animation,
+                initialHoldable.AnimationFrame,
+                initialHoldable.Scale,
+                initialHoldable.Rotation
+            );
+        }
+        else if (initialHoldable.Type != HoldableType.None)
+        {
+            UpdateSimpleHoldable(initialHoldable.Type, initialHoldable.Offset);
+        }
+
         var playerCollider = new PlayerCollider(OnPlayer);
         Add(playerCollider);
     }
@@ -154,7 +175,7 @@ public sealed class MiaoNetGhost : MiaoNetGhostEntity
         if (selfHoldable.Holder?.Holding != selfHoldable)
             selfHoldable.Holder = null;
 
-        UpdateLightSettings(MiaoNetModule.Settings.PlayerLight);
+        UpdateLightSettings(MiaoNetModule.Settings.PlayerLight || watchFocus);
 
         // TODO these can be prevented server-side
         // thus we should introduce PlayerGlobalSettings
@@ -332,6 +353,12 @@ public sealed class MiaoNetGhost : MiaoNetGhostEntity
             // remove it will lead to a vanilla crash...
             vertexLight?.Visible = false;
         }
+    }
+
+    public void SetWatchFocus(bool focused)
+    {
+        watchFocus = focused;
+        UpdateLightSettings(MiaoNetModule.Settings.PlayerLight || watchFocus);
     }
 
     private static Vector2 GetLightOffset(bool duck)
@@ -555,6 +582,7 @@ public sealed class MiaoNetGhost : MiaoNetGhostEntity
 
     public void UpdateNoHoldable()
     {
+        UpdateTheoHoldableLight(false);
         if (lastHoladableType == HoldableType.None)
             return;
         lastHoladableType = HoldableType.None;
@@ -571,6 +599,7 @@ public sealed class MiaoNetGhost : MiaoNetGhostEntity
             holdableOffset = offset;
             holdableSprite?.Position = holdableOffset.Value;
         }
+        UpdateTheoHoldableLight(type == HoldableType.Theo);
     }
 
     public void UpdateHoldable(HoldableType type, Vector2? offset, string? anim, ushort animFrame, Vector2 scale, float rotation)
@@ -589,6 +618,62 @@ public sealed class MiaoNetGhost : MiaoNetGhostEntity
             holdableSprite.Scale = scale;
             holdableSprite.Rotation = rotation;
         }
+        UpdateTheoHoldableLight(type == HoldableType.Theo);
+    }
+
+    public void UpdateRedBoosted(bool boosted)
+    {
+        if (!boosted)
+        {
+            if (redBoosterSprite is not null)
+                redBoosterSprite.Active = false;
+            return;
+        }
+
+        if (redBoosterSprite is null)
+        {
+            redBoosterSprite = GFX.SpriteBank.Create("boosterRed");
+            redBoosterSprite.Visible = false;
+            Add(redBoosterSprite);
+        }
+
+        redBoosterSprite.Position = Center - Position + new Vector2(0f, -2f);
+        redBoosterSprite.FlipX = facing == Facings.Left;
+        redBoosterSprite.Active = true;
+        if (redBoosterSprite.CurrentAnimationID != "spin")
+            redBoosterSprite.Play("spin");
+    }
+
+    private bool HasRoomBoosterVisual()
+    {
+        if (Scene is not Level level || redBoosterSprite is null)
+            return false;
+
+        Vector2 expected = Center + new Vector2(0f, -2f);
+        return level.Entities.OfType<Booster>().Any(booster =>
+            booster.red
+            && booster.BoostingPlayer
+            && booster.sprite.Visible
+            && Vector2.DistanceSquared(booster.sprite.RenderPosition, expected) <= 32f * 32f
+        );
+    }
+
+    private void UpdateTheoHoldableLight(bool enabled)
+    {
+        if (!enabled)
+        {
+            if (theoHoldableLight is not null)
+                theoHoldableLight.Visible = false;
+            return;
+        }
+
+        if (theoHoldableLight is null)
+        {
+            theoHoldableLight = new VertexLight(Vector2.Zero, Color.White, 1f, 32, 64);
+            Add(theoHoldableLight);
+        }
+        theoHoldableLight.Position = (holdableOffset ?? Vector2.Zero) + new Vector2(0f, -5f);
+        theoHoldableLight.Visible = true;
     }
 
     public void UpdateWind(Vector2 wind)
@@ -745,6 +830,9 @@ public sealed class MiaoNetGhost : MiaoNetGhostEntity
             BaseRender();
             playerSprite.Scale.X *= (float)facing;
         }
+
+        if (redBoosterSprite is { Active: true } && !HasRoomBoosterVisual())
+            redBoosterSprite.Render();
 
         if (lastHoladableType == HoldableType.Jelly)
         {
