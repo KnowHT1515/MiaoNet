@@ -19,10 +19,9 @@
       <_ModLinkNotExists>true</_ModLinkNotExists>
     </PropertyGroup>
     <Message Condition="'$(_ModLinkNotExists)' == 'true'" Text="Symbolic link not created, creating..."/>
-    <!--Prefer a directory symbolic link on Windows, and fall back to a junction when
-        the current session does not have symbolic-link creation privileges.-->
+    <!--create symbolic link on windows-->
     <Exec Condition="'$(_ModLinkNotExists)' == 'true' And '$(OS)' == 'Windows_NT'"
-        Command="mklink /d &quot;$(CelesteRootPath)/Mods/$(AssemblyName)_link&quot; &quot;$(MSBuildProjectDirectory)/$(ModAssetsFolderName)&quot; || mklink /j &quot;$(CelesteRootPath)/Mods/$(AssemblyName)_link&quot; &quot;$(MSBuildProjectDirectory)/$(ModAssetsFolderName)&quot;"/>
+        Command="mklink /d &quot;$(CelesteRootPath)/Mods/$(AssemblyName)_link&quot; &quot;$(MSBuildProjectDirectory)/$(ModAssetsFolderName)&quot;"/>
     <!--create symbolic link on unix-->
     <Exec Condition="'$(_ModLinkNotExists)' == 'true' And '$(OS)' == 'Unix'"
         Command="ln -s &quot;$(MSBuildProjectDirectory)/$(ModAssetsFolderName)&quot; &quot;$(CelesteRootPath)/Mods/$(AssemblyName)_link&quot;"/>
