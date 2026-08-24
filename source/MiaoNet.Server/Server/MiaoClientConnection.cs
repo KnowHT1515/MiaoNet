@@ -118,18 +118,31 @@ public sealed class MiaoClientConnection : IPacketSerializationContext
     public bool TryQueuePacket(IContextualPacket packet)
         => sendChannel.Writer.TryWrite(packet);
 
-    // TODO maybe we can add a UserParam parameter to avoid closure
-    // TODO timeout
-    // TODO cancelling
+    // Callers that impose their own timeout must release the registered callback
+    // with TryCancelRequest. The existing callback overload remains unchanged.
     public ValueTask RequestAsync<TResponse>(PacketRequest<TResponse> packet, ResponseHandler<TResponse> callback)
         where TResponse : PacketResponse
+        => RequestAsync(packet, callback, out _);
+
+    internal ValueTask RequestAsync<TResponse>(
+        PacketRequest<TResponse> packet,
+        ResponseHandler<TResponse> callback,
+        out int requestID
+    )
+        where TResponse : PacketResponse
     {
-        int id = Interlocked.Increment(ref currentRequestID);
-        packet.RequestID = id;
-        bool success = pendingRequests.TryAdd(id, (packet) => callback((TResponse)packet));
+        requestID = Interlocked.Increment(ref currentRequestID);
+        packet.RequestID = requestID;
+        bool success = pendingRequests.TryAdd(
+            requestID,
+            packet => callback((TResponse)packet)
+        );
         Debug.Assert(success);
         return QueuePacketAsync(packet);
     }
+
+    internal bool TryCancelRequest(int requestID)
+        => pendingRequests.TryRemove(requestID, out _);
 
     public ValueTask ResponseAsync<TResponse>(PacketRequest<TResponse> request, TResponse response)
         where TResponse : PacketResponse

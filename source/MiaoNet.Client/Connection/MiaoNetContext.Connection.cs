@@ -70,6 +70,12 @@ partial class MiaoNetContext
                 notification.TargetPlayerID,
                 Delta = SummarizeDelta(notification.Delta),
             }, options),
+            PacketWatchResyncSnapshot resync => System.Text.Json.JsonSerializer.Serialize(new
+            {
+                resync.SessionID,
+                resync.TargetPlayerID,
+                Snapshot = SummarizeSnapshot(resync.Snapshot),
+            }, options),
             _ => System.Text.Json.JsonSerializer.Serialize((object)packet, options),
         };
 

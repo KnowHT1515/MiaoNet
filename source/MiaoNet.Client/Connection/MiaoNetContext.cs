@@ -87,6 +87,8 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
 
     public ClientState? ClientState => clientState;
 
+    public ServerFeatureFlags ServerFeatures { get; private set; }
+
     public MainComponent MainComponent { get; }
 
     public EmoteComponent EmoteComponent { get; }
@@ -165,6 +167,7 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
         receiveQueue.Clear();
         pendingRequests.Clear();
         clientState = null;
+        ServerFeatures = ServerFeatureFlags.None;
         hasComponentFocus = false;
         PooledStringManager = null;
         components?.ForEach(c => c.OnDisconnected());
@@ -219,6 +222,7 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
 #if USE_CELEMIAO_AUTH
         MiaoNetModule.Settings.LastName = packetClientInitial.SelfPlayerInfo.Name;
 #endif
+        ServerFeatures = packetClientInitial.ServerFeatures;
         clientState = new(packetClientInitial);
         PlayerPresenceMessage = packetClientInitial.PlayerPresenceMessage;
         this.connection = connection;
@@ -228,6 +232,9 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
             ChatComponent.AddLocalChat(MiaoNetChatText.CreateAnnouncement(line.ToString()));
         OnConnected();
     }
+
+    public bool CanUseWatchSceneSync(OnlinePlayer target)
+        => WatchProtocolCompatibility.SupportsWatchSceneSync(ServerFeatures, target.GlobalFlags);
 
     // warn: this is called on Connection Thread
     private bool HandleDirectPacket(IContextualPacket packet)
