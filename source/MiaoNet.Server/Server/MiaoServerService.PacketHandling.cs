@@ -890,7 +890,6 @@ public sealed partial class MiaoServerService
 
         if (request is not null)
         {
-            int requestID = 0;
             try
             {
                 await target!.RequestAsync(
@@ -898,15 +897,14 @@ public sealed partial class MiaoServerService
                     response => HandleWatchResyncSnapshotResponseAsync(
                         attempt,
                         response
-                    ),
-                    out requestID
+                    )
                 );
-                _ = MonitorWatchResyncTimeoutAsync(target, attempt, requestID);
+                _ = MonitorWatchResyncTimeoutAsync(target, attempt, request.RequestID);
             }
             catch (Exception exception)
             {
-                if (requestID != 0)
-                    target!.TryCancelRequest(requestID);
+                if (request.RequestID != 0)
+                    target!.TryCancelRequest(request.RequestID);
                 bool retry = FinishFailedWatchResyncAttempt(attempt);
                 logger.LogWarning(
                     AppEvents.Watch,
@@ -996,11 +994,7 @@ public sealed partial class MiaoServerService
             );
         }
 
-        if (!retry)
-            return;
-        if (response.Result == WatchSnapshotResult.LocationChanged)
-            await RequestWatchResyncSnapshotAsync(attempt.TargetID);
-        else
+        if (retry)
             ScheduleWatchResyncRetry(attempt);
     }
 

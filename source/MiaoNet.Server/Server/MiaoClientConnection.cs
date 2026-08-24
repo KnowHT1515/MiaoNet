@@ -118,20 +118,10 @@ public sealed class MiaoClientConnection : IPacketSerializationContext
     public bool TryQueuePacket(IContextualPacket packet)
         => sendChannel.Writer.TryWrite(packet);
 
-    // Callers that impose their own timeout must release the registered callback
-    // with TryCancelRequest. The existing callback overload remains unchanged.
     public ValueTask RequestAsync<TResponse>(PacketRequest<TResponse> packet, ResponseHandler<TResponse> callback)
         where TResponse : PacketResponse
-        => RequestAsync(packet, callback, out _);
-
-    internal ValueTask RequestAsync<TResponse>(
-        PacketRequest<TResponse> packet,
-        ResponseHandler<TResponse> callback,
-        out int requestID
-    )
-        where TResponse : PacketResponse
     {
-        requestID = Interlocked.Increment(ref currentRequestID);
+        int requestID = Interlocked.Increment(ref currentRequestID);
         packet.RequestID = requestID;
         bool success = pendingRequests.TryAdd(
             requestID,
@@ -152,20 +142,7 @@ public sealed class MiaoClientConnection : IPacketSerializationContext
     }
 
     public ResponseHandler? OnResponse(PacketResponse response)
-    {
-        if (pendingRequests.TryRemove(response.RequestID, out var handler))
-            return handler;
-
-        logger.LogWarning(
-            "Could not find source request id of response {id}, type is {type}.",
-            response.RequestID,
-            response.GetType().FullName
-        );
-        foreach (var item in pendingRequests)
-            logger.LogWarning("pendingRequests has key: {key}", item.Key);
-
-        return null;
-    }
+        => pendingRequests.TryRemove(response.RequestID, out var handler) ? handler : null;
 
     #endregion
 
