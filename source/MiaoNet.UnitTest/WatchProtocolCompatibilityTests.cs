@@ -7,6 +7,19 @@ namespace MiaoNet.UnitTest;
 public sealed class WatchProtocolCompatibilityTests
 {
     [TestMethod]
+    public void RepurposedAndRetiredEntityKindsKeepTheirWireValues()
+    {
+        Assert.AreEqual(
+            (ushort)23,
+            (ushort)Enum.Parse<WatchEntityKind>(nameof(WatchEntityKind.TouchSwitchAndSwitchGate))
+        );
+        Assert.AreEqual(
+            (ushort)37,
+            (ushort)Enum.Parse<WatchEntityKind>(nameof(WatchEntityKind.Reserved37))
+        );
+    }
+
+    [TestMethod]
     public void WatchPacketsAreAppendedAfterUpstreamPackets()
     {
         PacketRegistryAttribute registry = typeof(PacketRegistry).Assembly

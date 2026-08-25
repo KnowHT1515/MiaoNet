@@ -130,6 +130,11 @@ public sealed partial class MainComponent : MiaoNetComponent
         if (level is null)
             return;
 
+#if PACKET_TRACING
+        if (Watching)
+            RecordWatchUpdateTick(level);
+#endif
+
         if (UpdateWatchSceneRestore(level))
             return;
 
@@ -138,6 +143,12 @@ public sealed partial class MainComponent : MiaoNetComponent
         {
             SafeGuard.Assert(TryGetAndSendState(level, PlayerLocation.FetchFrom(level.Session)));
             pendingMapChanged = false;
+        }
+
+        if (player is null && IsWatchDeathRoomUnloaded)
+        {
+            UpdateWatchDeathTransition(level);
+            return;
         }
 
         if (player is null || player.Dead)
@@ -343,6 +354,10 @@ public sealed partial class MainComponent : MiaoNetComponent
         if (stateDelta.HasCameraPosition)
             stateDelta.CameraPosition = level.Camera.Position;
 
+#if PACKET_TRACING
+        if (watchProducerSessions.Count > 0)
+            RecordWatchPlayerFrameSent();
+#endif
         context.QueuePacket(new PacketPlayerFrame(stateDelta));
     }
 
@@ -636,6 +651,9 @@ public sealed partial class MainComponent : MiaoNetComponent
         BufferWatchCameraSample(player, delta);
         if (WatchSceneSyncActive && playerWatching?.ID == player.ID)
         {
+#if PACKET_TRACING
+            RecordWatchPlayerFrameReceived();
+#endif
             WatchBadelineOldsiteAdapter.RecordRemotePlayerFrame(delta);
             WatchAngryOshiroAdapter.RecordRemotePlayerFrame(delta);
         }

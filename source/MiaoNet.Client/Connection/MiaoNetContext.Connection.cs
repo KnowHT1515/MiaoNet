@@ -20,7 +20,8 @@ partial class MiaoNetContext
     )
     {
         string typeName = packet.GetType().ToString();
-        if (typeName.Contains("Frame", StringComparison.Ordinal)
+        if (packet is PacketWatchSceneDelta or PacketWatchSceneDeltaNotification
+            || typeName.Contains("Frame", StringComparison.Ordinal)
             || typeName.Contains("PingData", StringComparison.Ordinal)
             || typeName.Contains("UpdateOnlineStatus", StringComparison.Ordinal)
             || typeName.Contains("PlayedAudio", StringComparison.Ordinal)
@@ -60,16 +61,6 @@ partial class MiaoNetContext
                 response.Result,
                 Snapshot = response.Snapshot is null ? null : SummarizeSnapshot(response.Snapshot),
             }, options),
-            PacketWatchSceneDelta packetDelta => System.Text.Json.JsonSerializer.Serialize(new
-            {
-                Delta = SummarizeDelta(packetDelta.Delta),
-            }, options),
-            PacketWatchSceneDeltaNotification notification => System.Text.Json.JsonSerializer.Serialize(new
-            {
-                notification.SessionID,
-                notification.TargetPlayerID,
-                Delta = SummarizeDelta(notification.Delta),
-            }, options),
             PacketWatchResyncSnapshot resync => System.Text.Json.JsonSerializer.Serialize(new
             {
                 resync.SessionID,
@@ -85,26 +76,8 @@ partial class MiaoNetContext
             snapshot.Sequence,
             snapshot.Location,
             FlagCount = snapshot.Flags.Count,
-            TouchSwitchCount = snapshot.ActiveTouchSwitchIDs.Count,
             EntityStateCount = snapshot.EntityStates.Count,
             EntityKinds = CountEntityKinds(snapshot.EntityStates.Select(state => state.Key.Kind)),
-        };
-
-    private static object SummarizeDelta(WatchSceneDelta delta)
-        => new
-        {
-            delta.Sequence,
-            delta.Location,
-            AddedFlagCount = delta.AddedFlags.Count,
-            RemovedFlagCount = delta.RemovedFlags.Count,
-            delta.RequiresRoomReload,
-            delta.HasTouchSwitchState,
-            TouchSwitchCount = delta.ActiveTouchSwitchIDs.Count,
-            delta.EntityStateMode,
-            EntityStateCount = delta.EntityStates.Count,
-            EntityEventCount = delta.EntityEvents.Count,
-            EntityKinds = CountEntityKinds(delta.EntityStates.Select(state => state.Key.Kind)),
-            EventKinds = CountEntityKinds(delta.EntityEvents.Select(entityEvent => entityEvent.Key.Kind)),
         };
 
     private static IReadOnlyDictionary<WatchEntityKind, int> CountEntityKinds(
@@ -451,7 +424,7 @@ partial class MiaoNetContext
                         var packet = packets.Current;
 
                         if (!HandleDirectPacket(operation, connection, packet))
-                            receiveQueue.Enqueue((operation.Generation, packet));
+                            EnqueueReceivedPacket(operation.Generation, packet);
 #if PACKET_TRACING
                         TracePacketSafely(packet, options);
 #endif

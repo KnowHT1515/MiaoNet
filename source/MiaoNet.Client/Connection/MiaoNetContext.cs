@@ -20,7 +20,30 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
 
     private readonly ConnectionLifecycleCoordinator connectionLifecycle;
     private ConnectionOperation? activeConnectionOperation;
+#if PACKET_TRACING
+    private readonly ConcurrentQueue<DebugReceivedPacket> receiveQueue;
+    private int debugMaxReceiveQueueDepth;
+    private long debugReceivedPacketsHandled;
+    private long debugReceiveQueueBudgetHits;
+    private long debugTotalReceiveQueueWaitTicks;
+    private long debugMaxReceiveQueueWaitTicks;
+    private long debugMaxReceiveQueueDrainTicks;
+    private int debugMaxPacketsHandledPerUpdate;
+    private long debugPlayerFramesHandled;
+    private long debugTotalPlayerFrameQueueWaitTicks;
+    private long debugMaxPlayerFrameQueueWaitTicks;
+    private long debugWatchDeltasHandled;
+    private long debugTotalWatchDeltaQueueWaitTicks;
+    private long debugMaxWatchDeltaQueueWaitTicks;
+
+    private readonly record struct DebugReceivedPacket(
+        long Generation,
+        IContextualPacket Packet,
+        long EnqueuedAt
+    );
+#else
     private readonly ConcurrentQueue<(long Generation, IContextualPacket Packet)> receiveQueue;
+#endif
     private readonly ConcurrentQueue<Action> mainThreadQueue;
 
     private readonly List<MiaoNetComponent> components;
@@ -197,9 +220,13 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
 
         // any better ways?
         List<PacketDisconnected>? terminalPackets = null;
-        while (receiveQueue.TryDequeue(out var received))
+        while (TryDequeueReceivedPacket(
+            out long receivedGeneration,
+            out IContextualPacket receivedPacket,
+            out _
+        ))
         {
-            if (received.Generation == generation.Value && received.Packet is PacketDisconnected dc)
+            if (receivedGeneration == generation.Value && receivedPacket is PacketDisconnected dc)
                 (terminalPackets ??= []).Add(dc);
         }
         pendingRequests.Clear();
@@ -238,14 +265,24 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
             int packetsHandled = 0;
             long receiveQueueStartedAt = Stopwatch.GetTimestamp();
             while (packetsHandled < MaxPacketsPerUpdate
-                && receiveQueue.TryDequeue(out var received))
+                && TryDequeueReceivedPacket(
+                    out long receivedGeneration,
+                    out IContextualPacket receivedPacket,
+                    out long enqueuedAt
+                ))
             {
-                if (connectionLifecycle.IsCurrent(received.Generation))
-                    HandleQueuedPacket(received.Packet);
+                if (connectionLifecycle.IsCurrent(receivedGeneration))
+                    HandleQueuedPacket(receivedPacket);
                 packetsHandled++;
+#if PACKET_TRACING
+                RecordDebugReceivedPacket(receivedPacket, enqueuedAt);
+#endif
                 if (Stopwatch.GetTimestamp() - receiveQueueStartedAt >= ReceiveQueueBudgetTicks)
                     break;
             }
+#if PACKET_TRACING
+            RecordDebugReceiveQueueDrain(receiveQueueStartedAt, packetsHandled);
+#endif
 
             if (!HasConnection)
                 return;
@@ -447,6 +484,148 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
         connection.QueuePacket(packet);
     }
 
+    private void EnqueueReceivedPacket(long generation, IContextualPacket packet)
+    {
+#if PACKET_TRACING
+        receiveQueue.Enqueue(new(generation, packet, Stopwatch.GetTimestamp()));
+        UpdateDebugMaximum(ref debugMaxReceiveQueueDepth, receiveQueue.Count);
+#else
+        receiveQueue.Enqueue((generation, packet));
+#endif
+    }
+
+    private bool TryDequeueReceivedPacket(
+        out long generation,
+        out IContextualPacket packet,
+        out long enqueuedAt
+    )
+    {
+#if PACKET_TRACING
+        if (receiveQueue.TryDequeue(out DebugReceivedPacket received))
+        {
+            generation = received.Generation;
+            packet = received.Packet;
+            enqueuedAt = received.EnqueuedAt;
+            return true;
+        }
+#else
+        if (receiveQueue.TryDequeue(out var received))
+        {
+            generation = received.Generation;
+            packet = received.Packet;
+            enqueuedAt = 0;
+            return true;
+        }
+#endif
+        generation = 0;
+        packet = null!;
+        enqueuedAt = 0;
+        return false;
+    }
+
+#if PACKET_TRACING
+    internal MiaoTransportDebugSnapshot ConsumeDebugTransportSnapshot()
+        => connection?.ConsumeDebugSnapshot() ?? default;
+
+    internal MiaoReceiveQueueDebugSnapshot ConsumeDebugReceiveQueueSnapshot()
+    {
+        MiaoQueueDebugState queue = GetDebugReceiveQueueState();
+        long packetCount = Interlocked.Exchange(ref debugReceivedPacketsHandled, 0);
+        long playerFrameCount = Interlocked.Exchange(ref debugPlayerFramesHandled, 0);
+        long watchDeltaCount = Interlocked.Exchange(ref debugWatchDeltasHandled, 0);
+        return new(
+            queue.Depth,
+            Interlocked.Exchange(ref debugMaxReceiveQueueDepth, queue.Depth),
+            queue.OldestPacketAgeMilliseconds,
+            packetCount,
+            Interlocked.Exchange(ref debugReceiveQueueBudgetHits, 0),
+            GetDebugAverageMilliseconds(
+                Interlocked.Exchange(ref debugTotalReceiveQueueWaitTicks, 0),
+                packetCount
+            ),
+            GetDebugMilliseconds(Interlocked.Exchange(ref debugMaxReceiveQueueWaitTicks, 0)),
+            GetDebugMilliseconds(Interlocked.Exchange(ref debugMaxReceiveQueueDrainTicks, 0)),
+            Interlocked.Exchange(ref debugMaxPacketsHandledPerUpdate, 0),
+            playerFrameCount,
+            GetDebugAverageMilliseconds(
+                Interlocked.Exchange(ref debugTotalPlayerFrameQueueWaitTicks, 0),
+                playerFrameCount
+            ),
+            GetDebugMilliseconds(Interlocked.Exchange(ref debugMaxPlayerFrameQueueWaitTicks, 0)),
+            watchDeltaCount,
+            GetDebugAverageMilliseconds(
+                Interlocked.Exchange(ref debugTotalWatchDeltaQueueWaitTicks, 0),
+                watchDeltaCount
+            ),
+            GetDebugMilliseconds(Interlocked.Exchange(ref debugMaxWatchDeltaQueueWaitTicks, 0))
+        );
+    }
+
+    internal (MiaoQueueDebugState Send, MiaoQueueDebugState Receive) GetDebugQueueStates()
+        => (connection?.GetDebugQueueState() ?? default, GetDebugReceiveQueueState());
+
+    private MiaoQueueDebugState GetDebugReceiveQueueState()
+    {
+        double oldestPacketAgeMilliseconds = receiveQueue.TryPeek(out DebugReceivedPacket packet)
+            ? GetDebugMilliseconds(Stopwatch.GetTimestamp() - packet.EnqueuedAt)
+            : 0d;
+        return new(receiveQueue.Count, oldestPacketAgeMilliseconds);
+    }
+
+    private void RecordDebugReceivedPacket(IContextualPacket packet, long enqueuedAt)
+    {
+        long queueWaitTicks = Stopwatch.GetTimestamp() - enqueuedAt;
+        Interlocked.Increment(ref debugReceivedPacketsHandled);
+        Interlocked.Add(ref debugTotalReceiveQueueWaitTicks, queueWaitTicks);
+        UpdateDebugMaximum(ref debugMaxReceiveQueueWaitTicks, queueWaitTicks);
+
+        if (packet is PacketContextualPlayerNotification<PacketPlayerFrame>)
+        {
+            Interlocked.Increment(ref debugPlayerFramesHandled);
+            Interlocked.Add(ref debugTotalPlayerFrameQueueWaitTicks, queueWaitTicks);
+            UpdateDebugMaximum(ref debugMaxPlayerFrameQueueWaitTicks, queueWaitTicks);
+        }
+        else if (packet is PacketWatchSceneDeltaNotification)
+        {
+            Interlocked.Increment(ref debugWatchDeltasHandled);
+            Interlocked.Add(ref debugTotalWatchDeltaQueueWaitTicks, queueWaitTicks);
+            UpdateDebugMaximum(ref debugMaxWatchDeltaQueueWaitTicks, queueWaitTicks);
+        }
+    }
+
+    private void RecordDebugReceiveQueueDrain(long startedAt, int packetsHandled)
+    {
+        UpdateDebugMaximum(ref debugMaxReceiveQueueDrainTicks, Stopwatch.GetTimestamp() - startedAt);
+        UpdateDebugMaximum(ref debugMaxPacketsHandledPerUpdate, packetsHandled);
+        if (packetsHandled > 0 && !receiveQueue.IsEmpty)
+            Interlocked.Increment(ref debugReceiveQueueBudgetHits);
+    }
+
+    private static void UpdateDebugMaximum(ref int target, int value)
+    {
+        int current;
+        while (value > (current = Volatile.Read(ref target))
+            && Interlocked.CompareExchange(ref target, value, current) != current)
+        {
+        }
+    }
+
+    private static void UpdateDebugMaximum(ref long target, long value)
+    {
+        long current;
+        while (value > (current = Volatile.Read(ref target))
+            && Interlocked.CompareExchange(ref target, value, current) != current)
+        {
+        }
+    }
+
+    private static double GetDebugAverageMilliseconds(long totalTicks, long sampleCount)
+        => sampleCount == 0 ? 0d : GetDebugMilliseconds(totalTicks) / sampleCount;
+
+    private static double GetDebugMilliseconds(long ticks)
+        => ticks * 1000d / Stopwatch.Frequency;
+#endif
+
     public void Request<TResponse>(PacketRequest<TResponse> request, Action<TResponse> callback)
         where TResponse : PacketResponse
         => Request(request, callback, CancellationToken.None);
@@ -480,3 +659,23 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
         SafeGuard.Assert(HasConnection);
     }
 }
+
+#if PACKET_TRACING
+internal readonly record struct MiaoReceiveQueueDebugSnapshot(
+    int CurrentQueueDepth,
+    int MaxQueueDepth,
+    double OldestPacketAgeMilliseconds,
+    long PacketsHandled,
+    long BudgetHits,
+    double AverageQueueWaitMilliseconds,
+    double MaxQueueWaitMilliseconds,
+    double MaxDrainMilliseconds,
+    int MaxPacketsHandledPerUpdate,
+    long PlayerFramesHandled,
+    double AveragePlayerFrameQueueWaitMilliseconds,
+    double MaxPlayerFrameQueueWaitMilliseconds,
+    long WatchDeltasHandled,
+    double AverageWatchDeltaQueueWaitMilliseconds,
+    double MaxWatchDeltaQueueWaitMilliseconds
+);
+#endif

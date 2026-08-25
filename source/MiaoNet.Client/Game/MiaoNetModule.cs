@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using FMOD.Studio;
 using MiaoNet.Shared;
 using Microsoft.Xna.Framework.Graphics;
@@ -96,8 +97,12 @@ public sealed class MiaoNetModule : EverestModule
             Everest.Events.Level.OnTransitionTo += Level_OnTransitionTo;
             On.Celeste.Level.Update += Level_Update_After;
             IL.Celeste.Level.Update += Level_Update;
+#if PACKET_TRACING
+            On.Monocle.Engine.Draw += Engine_Draw;
+            On.Celeste.Level.Render += Level_Render;
+            WatchLevelReloadDiagnostics.Load();
+#endif
             SpriteIDTracker.Load();
-            TouchSwitchIDTracker.Load();
             WatchPersistentSessionAdapter.Load();
             WatchCheckpointAdapter.Load();
             WatchWingedStrawberryAdapter.Load();
@@ -118,7 +123,6 @@ public sealed class MiaoNetModule : EverestModule
             WatchDashBlockAdapter.Load();
             WatchBounceBlockAdapter.Load();
             WatchPeriodicPlatformAdapter.Load();
-            WatchStaticSpinnerAdapter.Load();
             WatchTriggerSpikesAdapter.Load();
             WatchFireBallAdapter.Load();
             WatchLavaAdapter.Load();
@@ -158,7 +162,7 @@ public sealed class MiaoNetModule : EverestModule
             WatchWaveDashTutorialAdapter.Load();
             WatchPowerSourceNumberAdapter.Load();
             WatchCassetteBlockAdapter.Load();
-            WatchSwitchGateAdapter.Load();
+            WatchTouchSwitchAndSwitchGateAdapter.Load();
             WatchClutterSystemAdapter.Load();
             WatchDoorMechanismAdapter.Load();
             WatchKeyAdapter.Load();
@@ -223,8 +227,12 @@ public sealed class MiaoNetModule : EverestModule
         Everest.Events.Level.OnTransitionTo -= Level_OnTransitionTo;
         On.Celeste.Level.Update -= Level_Update_After;
         IL.Celeste.Level.Update -= Level_Update;
+#if PACKET_TRACING
+        WatchLevelReloadDiagnostics.Unload();
+        On.Celeste.Level.Render -= Level_Render;
+        On.Monocle.Engine.Draw -= Engine_Draw;
+#endif
         SpriteIDTracker.Unload();
-        TouchSwitchIDTracker.Unload();
         WatchTempleBigEyeballAdapter.Unload();
         WatchTriggerFirewall.Unload();
         WatchRemotePresentationAdapter.Unload();
@@ -247,7 +255,7 @@ public sealed class MiaoNetModule : EverestModule
         WatchKeyAdapter.Unload();
         WatchDoorMechanismAdapter.Unload();
         WatchClutterSystemAdapter.Unload();
-        WatchSwitchGateAdapter.Unload();
+        WatchTouchSwitchAndSwitchGateAdapter.Unload();
         WatchCassetteBlockAdapter.Unload();
         WatchRidgeGateAdapter.Unload();
         WatchRoomEnvironmentAdapter.Unload();
@@ -287,7 +295,6 @@ public sealed class MiaoNetModule : EverestModule
         WatchLavaAdapter.Unload();
         WatchFireBallAdapter.Unload();
         WatchTriggerSpikesAdapter.Unload();
-        WatchStaticSpinnerAdapter.Unload();
         WatchPeriodicPlatformAdapter.Unload();
         WatchBounceBlockAdapter.Unload();
         WatchDashBlockAdapter.Unload();
@@ -510,6 +517,9 @@ public sealed class MiaoNetModule : EverestModule
 
     private static void Level_Update_After(On.Celeste.Level.orig_Update orig, Level self)
     {
+#if PACKET_TRACING
+        long updateStartedAt = Stopwatch.GetTimestamp();
+#endif
         // While watching, room entities still update their local visual state but
         // must not retain Camera writes based on the hidden Player. Vanilla room
         // transitions remain the sole exception and continue owning the Camera.
@@ -518,8 +528,49 @@ public sealed class MiaoNetModule : EverestModule
         orig(self);
         if (preserveCamera && self.transition is null)
             self.Camera.Position = cameraPosition;
+#if PACKET_TRACING
+        long cameraUpdateStartedAt = Stopwatch.GetTimestamp();
+#endif
         Instance.miaoNetContext?.MainComponent.ApplyWatchCameraAfterLevelUpdate(self);
+#if PACKET_TRACING
+        Instance.miaoNetContext?.MainComponent.RecordWatchLevelUpdate(
+            updateStartedAt,
+            cameraUpdateStartedAt
+        );
+#endif
     }
+
+#if PACKET_TRACING
+    private static void Engine_Draw(
+        On.Monocle.Engine.orig_Draw orig,
+        Engine self,
+        Microsoft.Xna.Framework.GameTime gameTime
+    )
+    {
+        long startedAt = Stopwatch.GetTimestamp();
+        try
+        {
+            orig(self, gameTime);
+        }
+        finally
+        {
+            Instance.miaoNetContext?.MainComponent.RecordWatchDraw(startedAt);
+        }
+    }
+
+    private static void Level_Render(On.Celeste.Level.orig_Render orig, Level self)
+    {
+        long startedAt = Stopwatch.GetTimestamp();
+        try
+        {
+            orig(self);
+        }
+        finally
+        {
+            Instance.miaoNetContext?.MainComponent.RecordWatchLevelRender(startedAt);
+        }
+    }
+#endif
 
     private static void LevelLoader_OnLoadingThread(Level level)
     {

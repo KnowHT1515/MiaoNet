@@ -2,15 +2,12 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.IO.Compression;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
-using System.Threading.Channels;
-using System.Threading.Tasks.Sources;
 using MiaoNet.Shared;
 
 namespace MiaoNet.ClientShared;
@@ -25,8 +22,28 @@ public sealed partial class MiaoServerConnection : IDisposable
     // TODO we need to stop using this
     private readonly MemoryStream sendMemoryStream;
 
+#if PACKET_TRACING
+    private readonly ConcurrentQueue<DebugQueuedPacket> sendQueue;
+    private int debugMaxSendQueueDepth;
+    private long debugPacketsSent;
+    private long debugBytesSent;
+    private long debugTotalQueueWaitTicks;
+    private long debugMaxQueueWaitTicks;
+    private long debugMaxSerializationTicks;
+    private long debugMaxWriteTicks;
+    private long debugPlayerFramesSent;
+    private long debugPlayerFrameBytesSent;
+    private long debugWatchDeltasSent;
+    private long debugWatchDeltaBytesSent;
+    private readonly object debugSendMetricsLock = new();
+#else
     private readonly ConcurrentQueue<IContextualPacket> sendQueue;
+#endif
     private readonly SemaphoreSlim sendSemaphore;
+
+#if PACKET_TRACING
+    private readonly record struct DebugQueuedPacket(IContextualPacket Packet, long EnqueuedAt);
+#endif
 
     private MiaoServerConnection(Socket socket, SslStream sslStream)
     {
@@ -210,8 +227,8 @@ public sealed partial class MiaoServerConnection : IDisposable
     {
         while (!token.IsCancellationRequested)
         {
-            while (sendQueue.TryDequeue(out IContextualPacket? packet))
-                await SendPacketAsync(packet, context, token);
+            while (TryDequeuePacket(out IContextualPacket packet, out long enqueuedAt))
+                await SendPacketAsync(packet, enqueuedAt, context, token);
             if (token.IsCancellationRequested)
                 return;
             await sendSemaphore.WaitAsync(token);
@@ -244,17 +261,186 @@ public sealed partial class MiaoServerConnection : IDisposable
 
     public int QueuePacket(IContextualPacket packet)
     {
+#if PACKET_TRACING
+        sendQueue.Enqueue(new(packet, Stopwatch.GetTimestamp()));
+#else
         sendQueue.Enqueue(packet);
+#endif
         int count = sendQueue.Count;
+#if PACKET_TRACING
+        UpdateMaximum(ref debugMaxSendQueueDepth, count);
+#endif
         sendSemaphore.Release();
         return count;
     }
 
-    private async Task SendPacketAsync(IContextualPacket packet, IPacketSerializationContext context, CancellationToken token)
+    private bool TryDequeuePacket(
+        out IContextualPacket packet,
+        out long enqueuedAt
+    )
     {
+#if PACKET_TRACING
+        if (sendQueue.TryDequeue(out DebugQueuedPacket queuedPacket))
+        {
+            packet = queuedPacket.Packet;
+            enqueuedAt = queuedPacket.EnqueuedAt;
+            return true;
+        }
+#else
+        if (sendQueue.TryDequeue(out IContextualPacket? dequeuedPacket))
+        {
+            packet = dequeuedPacket!;
+            enqueuedAt = 0;
+            return true;
+        }
+#endif
+        packet = null!;
+        enqueuedAt = 0;
+        return false;
+    }
+
+    private async Task SendPacketAsync(
+        IContextualPacket packet,
+        long enqueuedAt,
+        IPacketSerializationContext context,
+        CancellationToken token
+    )
+    {
+#if PACKET_TRACING
+        long sendStartedAt = Stopwatch.GetTimestamp();
+#endif
         sendMemoryStream.Position = 0;
         PacketFraming.WritePacket(sendMemoryStream, packet, context);
         int frameSize = checked((int)sendMemoryStream.Position);
+#if PACKET_TRACING
+        long serializationCompletedAt = Stopwatch.GetTimestamp();
+#endif
         await sslStream.WriteAsync(sendMemoryStream.GetBuffer().AsMemory(0, frameSize), token);
+#if PACKET_TRACING
+        long writeCompletedAt = Stopwatch.GetTimestamp();
+        RecordDebugSend(
+            packet,
+            frameSize,
+            sendStartedAt - enqueuedAt,
+            serializationCompletedAt - sendStartedAt,
+            writeCompletedAt - serializationCompletedAt
+        );
+#endif
     }
+
+#if PACKET_TRACING
+    public MiaoTransportDebugSnapshot ConsumeDebugSnapshot()
+    {
+        MiaoQueueDebugState queue = GetDebugQueueState();
+        int maxQueueDepth = Interlocked.Exchange(ref debugMaxSendQueueDepth, queue.Depth);
+        lock (debugSendMetricsLock)
+        {
+            MiaoTransportDebugSnapshot snapshot = new(
+                queue.Depth,
+                maxQueueDepth,
+                queue.OldestPacketAgeMilliseconds,
+                debugPacketsSent,
+                debugBytesSent,
+                GetAverageMilliseconds(debugTotalQueueWaitTicks, debugPacketsSent),
+                ToMilliseconds(debugMaxQueueWaitTicks),
+                ToMilliseconds(debugMaxSerializationTicks),
+                ToMilliseconds(debugMaxWriteTicks),
+                debugPlayerFramesSent,
+                debugPlayerFrameBytesSent,
+                debugWatchDeltasSent,
+                debugWatchDeltaBytesSent
+            );
+            debugPacketsSent = 0;
+            debugBytesSent = 0;
+            debugTotalQueueWaitTicks = 0;
+            debugMaxQueueWaitTicks = 0;
+            debugMaxSerializationTicks = 0;
+            debugMaxWriteTicks = 0;
+            debugPlayerFramesSent = 0;
+            debugPlayerFrameBytesSent = 0;
+            debugWatchDeltasSent = 0;
+            debugWatchDeltaBytesSent = 0;
+            return snapshot;
+        }
+    }
+
+    public MiaoQueueDebugState GetDebugQueueState()
+    {
+        double oldestPacketAgeMilliseconds = !sendQueue.TryPeek(out DebugQueuedPacket packet)
+            ? 0d
+            : ToMilliseconds(Stopwatch.GetTimestamp() - packet.EnqueuedAt);
+        return new(sendQueue.Count, oldestPacketAgeMilliseconds);
+    }
+
+    private void RecordDebugSend(
+        IContextualPacket packet,
+        int frameSize,
+        long queueWaitTicks,
+        long serializationTicks,
+        long writeTicks
+    )
+    {
+        lock (debugSendMetricsLock)
+        {
+            debugPacketsSent++;
+            debugBytesSent += frameSize;
+            debugTotalQueueWaitTicks += queueWaitTicks;
+            debugMaxQueueWaitTicks = Math.Max(debugMaxQueueWaitTicks, queueWaitTicks);
+            debugMaxSerializationTicks = Math.Max(
+                debugMaxSerializationTicks,
+                serializationTicks
+            );
+            debugMaxWriteTicks = Math.Max(debugMaxWriteTicks, writeTicks);
+
+            if (packet is PacketPlayerFrame)
+            {
+                debugPlayerFramesSent++;
+                debugPlayerFrameBytesSent += frameSize;
+            }
+            else if (packet is PacketWatchSceneDelta)
+            {
+                debugWatchDeltasSent++;
+                debugWatchDeltaBytesSent += frameSize;
+            }
+        }
+    }
+
+    private static void UpdateMaximum(ref int target, int value)
+    {
+        int current;
+        while (value > (current = Volatile.Read(ref target))
+            && Interlocked.CompareExchange(ref target, value, current) != current)
+        {
+        }
+    }
+
+    private static double GetAverageMilliseconds(long totalTicks, long sampleCount)
+        => sampleCount == 0 ? 0d : ToMilliseconds(totalTicks) / sampleCount;
+
+    private static double ToMilliseconds(long ticks)
+        => ticks * 1000d / Stopwatch.Frequency;
+#endif
 }
+
+#if PACKET_TRACING
+public readonly record struct MiaoQueueDebugState(
+    int Depth,
+    double OldestPacketAgeMilliseconds
+);
+
+public readonly record struct MiaoTransportDebugSnapshot(
+    int CurrentQueueDepth,
+    int MaxQueueDepth,
+    double OldestPacketAgeMilliseconds,
+    long PacketsSent,
+    long BytesSent,
+    double AverageQueueWaitMilliseconds,
+    double MaxQueueWaitMilliseconds,
+    double MaxSerializationMilliseconds,
+    double MaxWriteMilliseconds,
+    long PlayerFramesSent,
+    long PlayerFrameBytesSent,
+    long WatchDeltasSent,
+    long WatchDeltaBytesSent
+);
+#endif

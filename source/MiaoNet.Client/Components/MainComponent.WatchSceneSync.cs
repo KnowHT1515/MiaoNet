@@ -6,7 +6,6 @@ public sealed partial class MainComponent
 {
     private readonly HashSet<int> watchProducerSessions = new();
     private HashSet<string>? lastProducedFlags;
-    private HashSet<int>? lastProducedActiveTouchSwitchIDs;
     private Dictionary<WatchEntityKey, WatchEntityState>? lastProducedEntityStates;
     private readonly List<WatchEntityEvent> pendingProducedEntityEvents = new();
     private PlayerLocation watchProducerLocation;
@@ -36,7 +35,6 @@ public sealed partial class MainComponent
             UpdateWatchSceneProducer(level);
 
         string[] flags = level.Session.Flags.Order(StringComparer.Ordinal).ToArray();
-        int[] activeTouchSwitchIDs = FetchActiveTouchSwitchIDs(level).Order().ToArray();
         HashSet<WatchEntityKind> unavailableKinds = WatchEntitySyncRegistry.CaptureStates(
             level,
             out Dictionary<WatchEntityKey, WatchEntityState> entityStates,
@@ -54,7 +52,6 @@ public sealed partial class MainComponent
             location,
             sequence,
             flags,
-            activeTouchSwitchIDs,
             WatchSceneDelta.OrderEntityStates(entityStates.Values)
         );
         if (!WatchPacketValidator.IsValid(snapshot))
@@ -72,8 +69,10 @@ public sealed partial class MainComponent
             watchProducerLocation = location;
             watchProducerSequence = 0;
             lastProducedFlags = new(level.Session.Flags, StringComparer.Ordinal);
-            lastProducedActiveTouchSwitchIDs = activeTouchSwitchIDs.ToHashSet();
             lastProducedEntityStates = entityStates;
+#if PACKET_TRACING
+            ResetWatchDiagnostics();
+#endif
         }
 
         watchProducerSessions.Add(request.SessionID);
@@ -82,8 +81,7 @@ public sealed partial class MainComponent
         Logger.Info(
             LT.MiaoNetWatch,
             $"Captured watch snapshot for session {request.SessionID}; " +
-            $"flags={flags.Length}, touchSwitches={activeTouchSwitchIDs.Length}, " +
-            $"entities={entityStates.Count}, " +
+            $"flags={flags.Length}, entities={entityStates.Count}, " +
             $"sequence={watchProducerSequence}."
         );
     }
@@ -92,7 +90,6 @@ public sealed partial class MainComponent
     {
         if (watchProducerSessions.Count == 0
             || lastProducedFlags is null
-            || lastProducedActiveTouchSwitchIDs is null
             || lastProducedEntityStates is null)
             return;
 
@@ -101,13 +98,9 @@ public sealed partial class MainComponent
             return;
 
         HashSet<string> currentFlags = new(level.Session.Flags, StringComparer.Ordinal);
-        HashSet<int> currentActiveTouchSwitchIDs = FetchActiveTouchSwitchIDs(level);
         bool roomChanged = currentLocation != watchProducerLocation;
         bool requiresRoomReload = watchProducerRoomReloadPending && !roomChanged;
         bool isDeathRespawn = watchProducerDeathRespawnLocation == currentLocation;
-        bool forceLightweightResync = watchProducerEntityResyncPending
-            && isDeathRespawn
-            && !roomChanged;
         WatchRoomTransition? roomTransition = roomChanged
             && watchProducerPendingRoomTransition is { } pendingTransition
             && pendingTransition.SourceLocation == watchProducerLocation
@@ -117,11 +110,17 @@ public sealed partial class MainComponent
         IReadOnlyCollection<WatchEntityEvent> entityEvents = roomChanged || isDeathRespawn
             ? []
             : pendingProducedEntityEvents;
+#if PACKET_TRACING
+        long captureStartTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+#endif
         HashSet<WatchEntityKind> unavailableKinds = WatchEntitySyncRegistry.CaptureStates(
             level,
             out Dictionary<WatchEntityKey, WatchEntityState> currentEntityStates,
             forceCurrent: roomChanged || requiresRoomReload || isDeathRespawn
         );
+#if PACKET_TRACING
+        RecordWatchCapture(captureStartTimestamp, currentEntityStates.Count);
+#endif
         PreserveUnavailableWatchEntityStates(currentLocation, unavailableKinds, currentEntityStates);
         if (unavailableKinds.Count > 0)
             Logger.Warn(
@@ -134,12 +133,9 @@ public sealed partial class MainComponent
             currentLocation,
             lastProducedFlags,
             currentFlags,
-            lastProducedActiveTouchSwitchIDs,
-            currentActiveTouchSwitchIDs,
             lastProducedEntityStates,
             currentEntityStates,
             entityEvents,
-            roomChanged || isDeathRespawn,
             roomChanged || isDeathRespawn,
             requiresRoomReload,
             isDeathRespawn,
@@ -160,12 +156,9 @@ public sealed partial class MainComponent
                 currentLocation,
                 lastProducedFlags,
                 currentFlags,
-                lastProducedActiveTouchSwitchIDs,
-                currentActiveTouchSwitchIDs,
                 lastProducedEntityStates,
                 currentEntityStates,
                 [],
-                forceTouchSwitchState: true,
                 forceEntityState: true,
                 requiresRoomReload,
                 isDeathRespawn,
@@ -185,7 +178,6 @@ public sealed partial class MainComponent
         watchProducerSequence = delta.Sequence;
         watchProducerLocation = currentLocation;
         lastProducedFlags = currentFlags;
-        lastProducedActiveTouchSwitchIDs = currentActiveTouchSwitchIDs;
         lastProducedEntityStates = currentEntityStates;
         pendingProducedEntityEvents.Clear();
         watchProducerRoomReloadPending = false;
@@ -194,6 +186,9 @@ public sealed partial class MainComponent
             watchProducerDeathRespawnLocation = null;
         if (roomChanged)
             watchProducerPendingRoomTransition = null;
+#if PACKET_TRACING
+        RecordProducedWatchDelta(delta);
+#endif
         context.QueuePacket(new PacketWatchSceneDelta(delta));
         if (isDeathRespawn)
         {
@@ -220,7 +215,6 @@ public sealed partial class MainComponent
     {
         watchProducerSessions.Clear();
         lastProducedFlags = null;
-        lastProducedActiveTouchSwitchIDs = null;
         lastProducedEntityStates = null;
         pendingProducedEntityEvents.Clear();
         watchProducerLocation = default;
@@ -312,17 +306,5 @@ public sealed partial class MainComponent
             return;
 
         pendingProducedEntityEvents.Add(entityEvent);
-    }
-
-    private static HashSet<int> FetchActiveTouchSwitchIDs(Level level)
-    {
-        HashSet<int> activeTouchSwitchIDs = new();
-        foreach (TouchSwitch touchSwitch in level.Tracker.GetEntities<TouchSwitch>().Cast<TouchSwitch>())
-        {
-            if (touchSwitch.Switch.Activated
-                && TouchSwitchIDTracker.TryGetID(touchSwitch, level.Session.Level, out int id))
-                activeTouchSwitchIDs.Add(id);
-        }
-        return activeTouchSwitchIDs;
     }
 }

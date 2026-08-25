@@ -9,6 +9,7 @@ public sealed partial class MainComponent
         None,
         WaitingForRespawnState,
         WipingOut,
+        WaitingForRespawnLoad,
     }
 
     private WatchDeathTransitionPhase watchDeathTransitionPhase;
@@ -21,6 +22,11 @@ public sealed partial class MainComponent
     private PlayerLocation watchDeathRespawnLocation;
     private ScreenWipe? watchDeathWipe;
     private float watchDeathFreshCameraWait;
+    private bool watchDeathRoomUnloaded;
+
+    private bool IsWatchDeathRoomUnloaded
+        => watchDeathTransitionPhase == WatchDeathTransitionPhase.WaitingForRespawnLoad
+            && watchDeathRoomUnloaded;
 
     private void BeginWatchDeathTransition(Level level)
     {
@@ -28,6 +34,9 @@ public sealed partial class MainComponent
         InvalidateBufferedWatchCamera(awaitFreshSample: true);
         watchDeathTransitionPhase = WatchDeathTransitionPhase.WaitingForRespawnState;
         watchDeathSourceLocation = PlayerLocation.FetchFrom(level.Session);
+#if PACKET_TRACING
+        BeginWatchDeathDiagnostics(level);
+#endif
         Logger.Debug(LT.MiaoNetWatch, "Started Watcher visual death lifecycle.");
     }
 
@@ -37,6 +46,9 @@ public sealed partial class MainComponent
             BeginWatchDeathTransition(level);
 
         watchDeathWipeSignaled = true;
+#if PACKET_TRACING
+        RecordWatchDeathWipeSignal();
+#endif
         if (watchDeathTransitionPhase == WatchDeathTransitionPhase.WaitingForRespawnState
             && (level.Wipe is null || level.Wipe.Completed))
             StartWatchDeathWipeOut(level);
@@ -50,6 +62,9 @@ public sealed partial class MainComponent
         watchDeathRespawnPosition = position;
         watchDeathRespawnFromSaveState = fromSaveState;
         watchDeathRespawnNotificationReady = true;
+#if PACKET_TRACING
+        RecordWatchDeathRespawnReady();
+#endif
     }
 
     private void MarkWatchDeathRespawnStateReady(PlayerLocation location)
@@ -61,6 +76,9 @@ public sealed partial class MainComponent
 
         watchDeathRespawnLocation = location;
         watchDeathRespawnStateReady = true;
+#if PACKET_TRACING
+        RecordWatchDeathStateReady();
+#endif
     }
 
     private bool UpdateWatchDeathTransition(Level level)
@@ -75,10 +93,14 @@ public sealed partial class MainComponent
             return false;
         }
         if (playerWatching.Location != current)
+        {
             // A PlayerSeeker Void ending is a death followed by a direct room
             // load. Preserve the death state while the normal watch room
             // transition catches up instead of discarding its respawn packet.
+            if (watchDeathRoomUnloaded)
+                CancelWatchDeathTransition(level);
             return false;
+        }
 
         if (TryCompleteWatchCrossRoomRespawn(level))
             return false;
@@ -89,6 +111,15 @@ public sealed partial class MainComponent
             StartWatchDeathWipeOut(level);
 
         if (watchDeathTransitionPhase == WatchDeathTransitionPhase.WipingOut
+            && watchDeathWipe is { Completed: false, Percent: >= 1f })
+        {
+#if PACKET_TRACING
+            RecordWatchDeathBlackFrame();
+#endif
+            BeginWatchDeathRespawnReload(level);
+        }
+
+        if (watchDeathTransitionPhase == WatchDeathTransitionPhase.WaitingForRespawnLoad
             && watchDeathWipe is { Completed: false, Percent: >= 1f } wipe)
         {
             if (watchDeathRespawnStateReady && watchDeathRespawnNotificationReady
@@ -97,6 +128,10 @@ public sealed partial class MainComponent
 
             bool cameraReady = !watchCameraAwaitingFreshSample
                 || watchDeathFreshCameraWait >= 0.75f;
+#if PACKET_TRACING
+            if (cameraReady)
+                RecordWatchDeathCameraReady(watchCameraAwaitingFreshSample);
+#endif
             if (watchDeathRespawnStateReady && watchDeathRespawnNotificationReady && cameraReady)
                 wipe.EndTimer = 0f;
             else
@@ -116,19 +151,25 @@ public sealed partial class MainComponent
         watchDeathTransitionPhase = WatchDeathTransitionPhase.WipingOut;
         level.DoScreenWipe(false, () => CompleteWatchDeathWipeOut(level), false);
         watchDeathWipe = level.Wipe;
+#if PACKET_TRACING
+        RecordWatchDeathWipeStart();
+#endif
         Logger.Debug(LT.MiaoNetWatch, "Started Watcher death wipe at the Player wipe event.");
     }
 
     private void CompleteWatchDeathWipeOut(Level level)
     {
-        if (watchDeathTransitionPhase != WatchDeathTransitionPhase.WipingOut
+        if (watchDeathTransitionPhase != WatchDeathTransitionPhase.WaitingForRespawnLoad
             || Engine.Scene != level
             || playerWatching is null
             || !watchDeathRespawnStateReady
             || !watchDeathRespawnNotificationReady)
             return;
 
-        ApplyWatchDeathRespawnSceneState(level);
+        LoadWatchDeathRespawnSceneState(level);
+#if PACKET_TRACING
+        long presentationStartTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+#endif
         if (!SnapBufferedWatchCamera(level))
             SnapWatchCamera(level, watchDeathRespawnPosition);
         if (ghosts.TryGetValue(playerWatching.ID, out MiaoNetGhost? ghost))
@@ -138,6 +179,10 @@ public sealed partial class MainComponent
                 watchDeathRespawnFromSaveState
             );
         }
+#if PACKET_TRACING
+        RecordWatchDeathPresentation(presentationStartTimestamp);
+        CompleteWatchDeathDiagnostics(level, watchDeathFreshCameraWait);
+#endif
 
         ResetWatchDeathTransitionState();
         Logger.Debug(
@@ -155,7 +200,7 @@ public sealed partial class MainComponent
             || watchDeathSourceLocation == current)
             return false;
 
-        ApplyWatchDeathRespawnSceneState(level);
+        ApplyWatchEntityState(level, allowDuringTransition: true);
         if (!SnapBufferedWatchCamera(level))
             SnapWatchCamera(level, watchDeathRespawnPosition);
         if (playerWatching is not null
@@ -178,28 +223,203 @@ public sealed partial class MainComponent
         return true;
     }
 
-    private void ApplyWatchDeathRespawnSceneState(Level level)
+    private void BeginWatchDeathRespawnReload(Level level)
     {
-        ApplyWatchTouchSwitchState(level, allowDuringTransition: true);
-        ApplyWatchEntityState(level, allowDuringTransition: true);
-        if (watchLifecycleTouchSwitchRepairIncomplete || watchLifecycleIncompleteKinds.Count > 0)
+        watchDeathTransitionPhase = WatchDeathTransitionPhase.WaitingForRespawnLoad;
+        if (level.Completed)
+        {
             Logger.Warn(
                 LT.MiaoNetWatch,
-                $"Completed lightweight watched death respawn with localized reconciliation " +
-                $"gaps in {watchEntityLocation.Room}; touchSwitches=" +
-                $"{watchLifecycleTouchSwitchRepairIncomplete}, kinds=" +
-                $"{string.Join(",", watchLifecycleIncompleteKinds.Order())}."
+                "Skipped unloading the completed watched room during its death transition."
             );
+            return;
+        }
 
-        // Only a producer delta carrying RequiresRoomReload may authorize
-        // UpdateWatchRoomReload to call Level.Reload. Adapter mismatches during
-        // death remain localized and can never promote a lightweight respawn.
+#if PACKET_TRACING
+        BeginWatchDeathReloadDiagnostics();
+        WatchLevelReloadDiagnostics.Begin(level);
+#endif
+        Session session = level.Session;
+        if (session.FirstLevel
+            && session.Strawberries.Count == 0
+            && !session.Cassette
+            && !session.HeartGem
+            && !session.HitCheckpoint)
+        {
+            session.Time = 0L;
+            session.Deaths = 0;
+            level.TimerStarted = false;
+        }
+
+        session.Dashes = session.DashesAtLevelStart;
+        Glitch.Value = 0f;
+#pragma warning disable CS0618 // Match Celeste.Level.Reload exactly.
+        Engine.TimeRate = 1f;
+#pragma warning restore CS0618
+        Distort.Anxiety = 0f;
+        Distort.GameRate = 1f;
+        Audio.SetMusicParam("fade", 1f);
+        level.ParticlesBG.Clear();
+        level.Particles.Clear();
+        level.ParticlesFG.Clear();
+        TrailManager.Clear();
+
+        level.UnloadLevel();
+        watchDeathRoomUnloaded = true;
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+#if PACKET_TRACING
+        WatchLevelReloadDiagnostics.RecordGarbageCollectionCompleted();
+#endif
+        Logger.Debug(
+            LT.MiaoNetWatch,
+            "Unloaded the watched death room while waiting for its post-respawn snapshot."
+        );
+    }
+
+    private void LoadWatchDeathRespawnSceneState(Level level)
+    {
+        if (watchEntityStates is null
+            || PlayerLocation.FetchFrom(level.Session) != watchEntityLocation)
+        {
+            Logger.Warn(
+                LT.MiaoNetWatch,
+                "Skipped the watched death room reload because its complete scene state was unavailable."
+            );
+            CompleteWatchDeathRespawnReload(level);
+            ApplyWatchEntityState(level, allowDuringTransition: true);
+            return;
+        }
+
+        WatchEntityState[] states = watchEntityStates.Values.ToArray();
+#if PACKET_TRACING
+        RecordWatchDeathReloadSnapshot(states);
+        long sessionPreparationStartTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+#endif
+        WatchEntityKey persistentSessionKey = new(WatchEntityKind.PersistentSession, 0);
+        bool sessionPrepared = watchEntityStates.TryGetValue(
+            persistentSessionKey,
+            out WatchEntityState persistentSessionState
+        ) && WatchPersistentSessionAdapter.TryApplySessionState(level, persistentSessionState);
+#if PACKET_TRACING
+        RecordWatchDeathSessionPreparation(sessionPreparationStartTimestamp, sessionPrepared);
+#endif
+        if (!sessionPrepared)
+        {
+            Logger.Warn(
+                LT.MiaoNetWatch,
+                $"Kept the watched death respawn lightweight because its authoritative " +
+                $"PersistentSession state was unavailable for {watchEntityLocation.Room}."
+            );
+            CompleteWatchDeathRespawnReload(level);
+            ApplyWatchEntityState(level, allowDuringTransition: true);
+            return;
+        }
+
+        CompleteWatchDeathRespawnReload(level);
+
+        if (Engine.Scene != level
+            || PlayerLocation.FetchFrom(level.Session) != watchEntityLocation)
+        {
+            Logger.Error(
+                LT.MiaoNetWatch,
+                $"The watched death room reload did not rebuild {watchEntityLocation.Room}; " +
+                "skipped applying its scene snapshot."
+            );
+            return;
+        }
+
+        NormalizeWatchRoomRendering(level);
+        if (level.Tracker.GetEntity<Player>() is { } localPlayer)
+        {
+            localPlayer.Visible = false;
+            localPlayer.StateMachine.State = Player.StFrozen;
+        }
+        else
+        {
+            Logger.Warn(LT.MiaoNetWatch, "The watched death room reload produced no local Player.");
+        }
+
+        watchPendingEntityStateKeys.Clear();
+        watchPendingEntityStateKeys.UnionWith(watchEntityStates.Keys);
+        watchPendingEntityStateMode = WatchEntityStateMode.Replace;
+        watchEntityLifecycleResetPending = true;
         watchLifecycleIncompleteKinds.Clear();
-        watchLifecycleTouchSwitchRepairIncomplete = false;
+
+#if PACKET_TRACING
+        WatchEntitySyncRegistry.BeginDebugApplyTimingScope();
+        long snapshotApplyStartTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+        try
+        {
+            ApplyWatchEntityState(level, allowDuringTransition: true);
+        }
+        finally
+        {
+            RecordWatchDeathSnapshotApply(
+                snapshotApplyStartTimestamp,
+                WatchEntitySyncRegistry.EndDebugApplyTimingScope()
+            );
+        }
+#else
+        ApplyWatchEntityState(level, allowDuringTransition: true);
+#endif
+        Logger.Info(
+            LT.MiaoNetWatch,
+            "Loaded the watched room after its post-death scene snapshot became available."
+        );
+    }
+
+    private void CompleteWatchDeathRespawnReload(Level level)
+    {
+#if PACKET_TRACING
+        bool reloadCompleted = false;
+        try
+        {
+            LoadUnloadedWatchDeathRoom(level);
+            reloadCompleted = !watchDeathRoomUnloaded;
+        }
+        finally
+        {
+            if (WatchLevelReloadDiagnostics.IsActive)
+                RecordWatchDeathReload(WatchLevelReloadDiagnostics.End(), reloadCompleted);
+        }
+#else
+        LoadUnloadedWatchDeathRoom(level);
+#endif
+    }
+
+    private void LoadUnloadedWatchDeathRoom(Level level)
+    {
+        if (!watchDeathRoomUnloaded)
+            return;
+
+        level.LoadLevel(Player.IntroTypes.Respawn, false);
+        level.strawberriesDisplay.DrawLerp = 0f;
+        if (level.Entities.FindFirst<WindController>() is { } windController)
+            windController.SnapWind();
+        else
+            level.Wind = Vector2.Zero;
+        watchDeathRoomUnloaded = false;
     }
 
     private void CancelWatchDeathTransition(Level? level)
     {
+        if (watchDeathRoomUnloaded
+            && level is not null
+            && ReferenceEquals(Engine.Scene, level))
+        {
+            WatchEntityKey persistentSessionKey = new(WatchEntityKind.PersistentSession, 0);
+            if (watchEntityStates is not null
+                && PlayerLocation.FetchFrom(level.Session) == watchEntityLocation
+                && watchEntityStates.TryGetValue(
+                    persistentSessionKey,
+                    out WatchEntityState persistentSessionState
+                ))
+                WatchPersistentSessionAdapter.TryApplySessionState(level, persistentSessionState);
+
+            LoadUnloadedWatchDeathRoom(level);
+        }
+
         if (watchDeathWipe is { Completed: false } wipe
             && (level is null || ReferenceEquals(wipe.Scene, level)))
             wipe.Cancel();
@@ -219,5 +439,9 @@ public sealed partial class MainComponent
         watchDeathRespawnLocation = default;
         watchDeathWipe = null;
         watchDeathFreshCameraWait = 0f;
+        watchDeathRoomUnloaded = false;
+#if PACKET_TRACING
+        CancelWatchDeathDiagnostics();
+#endif
     }
 }
