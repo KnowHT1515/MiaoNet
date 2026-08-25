@@ -3,6 +3,7 @@ using MiaoNet.Shared;
 
 namespace Celeste.Mod.MiaoNet;
 
+[Tracked]
 public sealed class MiaoNetGhost : MiaoNetGhostEntity
 {
     // prevent it from being AfterUpdated by Level.Update
@@ -17,7 +18,8 @@ public sealed class MiaoNetGhost : MiaoNetGhostEntity
     private PlayerSprite playerSprite;
     private readonly GhostHair playerHair;
     private readonly GhostNameTag nameTag;
-    private readonly Leader leader;
+    private bool followersActive = true;
+    private readonly List<GhostFollower> followers;
 
     private Vector2 lastPosition;
 
@@ -82,6 +84,8 @@ public sealed class MiaoNetGhost : MiaoNetGhostEntity
 
     public Vector2 LastReleaseForce { get; private set; }
 
+    private static bool ReceiveFollowers => MiaoNetModule.Settings.FollowersSyncMode.HasReceive;
+
     [AllowNull]
     public PlayerGraphicsInfo GraphicsInfo
     {
@@ -99,7 +103,8 @@ public sealed class MiaoNetGhost : MiaoNetGhostEntity
 
         facing = Facings.Right;
         playerSprite = SafeCreatePlayerSprite(initialState.PlayerSpriteMode);
-        Add(leader = new Leader(new Vector2(0f, -8f)));
+        followersActive = ReceiveFollowers;
+        followers = new();
 
         playerHair = new GhostHair(playerSprite) { Facing = facing };
 
@@ -186,19 +191,20 @@ public sealed class MiaoNetGhost : MiaoNetGhostEntity
 
         // TODO these can be prevented server-side
         // thus we should introduce PlayerGlobalSettings
-        bool fr = MiaoNetModule.Settings.FollowersSyncMode.HasReceive;
-        if (!fr && leader.Active)
+        bool fr = ReceiveFollowers;
+        if (!fr && followersActive)
         {
-            leader.Active = false;
-            foreach (var e in leader.Followers)
-                e.Entity.RemoveSelf();
+            followersActive = false;
+            foreach (var e in followers)
+                Scene.CompletelyRemove(e);
         }
-        else if (fr && !leader.Active)
+        else if (fr && !followersActive)
         {
-            leader.Active = true;
-            foreach (var e in leader.Followers)
-                Scene.Add(e.Entity);
+            followersActive = true;
+            foreach (var e in followers)
+                Scene.Add(e);
         }
+
 
         if (OnlinePlayer.IsPaused)
             return;
@@ -273,8 +279,6 @@ public sealed class MiaoNetGhost : MiaoNetGhostEntity
             playerHair.StepYSinePerSegment = 0f;
             playerHair.StepPerSegment.Y += windDirection.Y * 0.5f;
         }
-
-        playerHair.AfterUpdate();
 
         if (!level.Paused)
         {
@@ -440,35 +444,36 @@ public sealed class MiaoNetGhost : MiaoNetGhostEntity
         {
             GhostFollower gf = new(this, info.Offset, info.Type, info.SpriteID);
             gf.UpdateSprite(info.AnimationID, info.AnimationFrame);
-            leader.GainFollower(gf.Follower);
-            Scene?.Add(gf);
+            followers.Add(gf);
+            if (followersActive)
+                Scene?.Add(gf);
         }
     }
 
     public void OnFollowerDeltas(FollowerInfoDelta[] deltas)
     {
-        if (deltas.Length != leader.Followers.Count)
+        if (deltas.Length != followers.Count)
         {
             Logger.Error(
                 LT.MiaoNet,
-                $"Received {deltas.Length} follower deltas but there's only {leader.Followers.Count} followers."
+                $"Received {deltas.Length} follower deltas but there's only {followers.Count} followers."
             );
             // let it crash
         }
         for (int i = 0; i < deltas.Length; i++)
         {
             FollowerInfoDelta delta = deltas[i];
-            var gf = leader.Followers[i].EntityAs<GhostFollower>();
+            var gf = followers[i];
             gf.UpdateSprite(delta.AnimationID, delta.AnimationFrame);
-            gf.Position = leader.Entity.Position + delta.Offset;
+            gf.Position = Position + delta.Offset;
         }
     }
 
     private void CleanUpFollowers()
     {
-        foreach (var follower in leader.Followers)
-            Scene?.CompletelyRemove(follower.Entity);
-        leader.Followers.Clear();
+        foreach (var follower in followers)
+            Scene?.CompletelyRemove(follower);
+        followers.Clear();
     }
 
     private void AddTrail(int dashes)
@@ -823,11 +828,13 @@ public sealed class MiaoNetGhost : MiaoNetGhostEntity
         scene.Add(nameTag);
         if (idleHover is not null)
             scene.Add(idleHover);
-        foreach (var follower in leader.Followers)
+        if (followersActive)
         {
-            Entity e = follower.Entity;
-            if (e.Scene is null)
-                scene.Add(e);
+            foreach (var follower in followers)
+            {
+                if (follower.Scene is null)
+                    scene.Add(follower);
+            }
         }
     }
 
@@ -875,6 +882,24 @@ public sealed class MiaoNetGhost : MiaoNetGhostEntity
         if (respawning)
         {
             DeathEffect.Draw(Position, playerHair.Color, deadEase);
+        }
+    }
+    public void HairAfterUpdate()
+    {
+        if (dead)
+            return;
+
+        if (OnlinePlayer.IsPaused)
+        {
+            // only keep the position
+            // yes this is kinda hacky
+            Vector2 offset = playerHair.Sprite.HairOffset * new Vector2((float)playerHair.Facing, 1f);
+            Vector2 expectedNode0Position = playerHair.Sprite.RenderPosition + new Vector2(0f, -9f * playerHair.Sprite.Scale.Y) + offset;
+            playerHair.MoveHairBy(expectedNode0Position - playerHair.Nodes[0]);
+        }
+        else
+        {
+            playerHair.AfterUpdate();
         }
     }
 }

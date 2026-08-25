@@ -1,4 +1,4 @@
-﻿using MiaoNet.Shared;
+using MiaoNet.Shared;
 
 namespace Celeste.Mod.MiaoNet;
 
@@ -11,8 +11,6 @@ public sealed class GhostFollower : MiaoNetGhostEntity
     private readonly BloomPoint? bloomPoint;
     private readonly VertexLight? vertexLight;
 
-    public Follower Follower { get; }
-
     public override bool WatchPresentationFocus => owner.WatchFocus;
 
     public GhostFollower(MiaoNetGhost ghost, Vector2 offset, FollowerType type, string spriteID)
@@ -21,7 +19,6 @@ public sealed class GhostFollower : MiaoNetGhostEntity
         owner = ghost;
         Tag |= ghost.Tag;
         Depth = Depths.Player + 1;
-        Add(Follower = new() { MoveTowardsLeader = false });
 
         if (GFX.SpriteBank.SpriteData.ContainsKey(spriteID))
         {

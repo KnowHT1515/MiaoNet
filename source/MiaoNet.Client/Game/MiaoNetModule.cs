@@ -192,6 +192,7 @@ public sealed class MiaoNetModule : EverestModule
             On.Celeste.PlayerCollider.Check += PlayerCollider_Check;
             On.Celeste.Player.TransitionTo += Player_TransitionTo;
             IL.Celeste.LanguageSelectUI.SetNextLanguage += LanguageSelectUI_SetNextLanguage;
+            Everest.Events.Level.OnAfterUpdate += Level_OnAfterUpdate;
         }
         using (new DetourConfigContext(RootBeforeAllConfig).Use())
         {
@@ -318,6 +319,7 @@ public sealed class MiaoNetModule : EverestModule
         On.Celeste.PlayerCollider.Check -= PlayerCollider_Check;
         On.Celeste.Player.TransitionTo -= Player_TransitionTo;
         IL.Celeste.LanguageSelectUI.SetNextLanguage -= LanguageSelectUI_SetNextLanguage;
+        Everest.Events.Level.OnAfterUpdate -= Level_OnAfterUpdate;
 
         On.Celeste.PlayerSprite.ctor -= PlayerSprite_ctor;
 
@@ -349,8 +351,14 @@ public sealed class MiaoNetModule : EverestModule
             item.Button?.Deregister();
     }
 
+    private static void Level_OnAfterUpdate(Level level)
+    {
+        foreach (MiaoNetGhost ghost in level.Tracker.GetEntities<MiaoNetGhost>().Cast<MiaoNetGhost>())
+            ghost.HairAfterUpdate();
+    }
+
     // do not dispose schinese textures
-    private void LanguageSelectUI_SetNextLanguage(ILContext il)
+    private static void LanguageSelectUI_SetNextLanguage(ILContext il)
     {
         VariableDefinition vdSChineseLang = new VariableDefinition(il.Import(typeof(Language)));
         il.Body.Variables.Add(vdSChineseLang);
