@@ -20,8 +20,16 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
 
     private readonly ConnectionLifecycleCoordinator connectionLifecycle;
     private ConnectionOperation? activeConnectionOperation;
+    private readonly ConcurrentPacketPriorityQueue<ReceivedPacket> receiveQueue;
+    private long currentReceivedPacketTimestamp;
+
+    private readonly record struct ReceivedPacket(
+        long Generation,
+        IContextualPacket Packet,
+        long EnqueuedAt
+    );
+
 #if PACKET_TRACING
-    private readonly ConcurrentQueue<DebugReceivedPacket> receiveQueue;
     private int debugMaxReceiveQueueDepth;
     private long debugReceivedPacketsHandled;
     private long debugReceiveQueueBudgetHits;
@@ -36,13 +44,6 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
     private long debugTotalWatchDeltaQueueWaitTicks;
     private long debugMaxWatchDeltaQueueWaitTicks;
 
-    private readonly record struct DebugReceivedPacket(
-        long Generation,
-        IContextualPacket Packet,
-        long EnqueuedAt
-    );
-#else
-    private readonly ConcurrentQueue<(long Generation, IContextualPacket Packet)> receiveQueue;
 #endif
     private readonly ConcurrentQueue<Action> mainThreadQueue;
 
@@ -114,6 +115,11 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
     public ServerFeatureFlags ServerFeatures { get; private set; }
 
     public MainComponent MainComponent { get; }
+
+    internal long CurrentReceivedPacketTimestamp
+        => currentReceivedPacketTimestamp != 0
+            ? currentReceivedPacketTimestamp
+            : Stopwatch.GetTimestamp();
 
     public EmoteComponent EmoteComponent { get; }
 
@@ -272,7 +278,17 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
                 ))
             {
                 if (connectionLifecycle.IsCurrent(receivedGeneration))
-                    HandleQueuedPacket(receivedPacket);
+                {
+                    currentReceivedPacketTimestamp = enqueuedAt;
+                    try
+                    {
+                        HandleQueuedPacket(receivedPacket);
+                    }
+                    finally
+                    {
+                        currentReceivedPacketTimestamp = 0;
+                    }
+                }
                 packetsHandled++;
 #if PACKET_TRACING
                 RecordDebugReceivedPacket(receivedPacket, enqueuedAt);
@@ -486,37 +502,30 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
 
     private void EnqueueReceivedPacket(long generation, IContextualPacket packet)
     {
+        PacketPriority priority = PacketPriorityClassifier.Classify(packet);
+        receiveQueue.Enqueue(priority, new(generation, packet, Stopwatch.GetTimestamp()));
 #if PACKET_TRACING
-        receiveQueue.Enqueue(new(generation, packet, Stopwatch.GetTimestamp()));
         UpdateDebugMaximum(ref debugMaxReceiveQueueDepth, receiveQueue.Count);
-#else
-        receiveQueue.Enqueue((generation, packet));
 #endif
     }
 
     private bool TryDequeueReceivedPacket(
         out long generation,
         out IContextualPacket packet,
-        out long enqueuedAt
+        out long enqueuedAt,
+        bool includeWatchEntity = true
     )
     {
-#if PACKET_TRACING
-        if (receiveQueue.TryDequeue(out DebugReceivedPacket received))
+        bool dequeued = includeWatchEntity
+            ? receiveQueue.TryDequeue(out ReceivedPacket received)
+            : receiveQueue.TryDequeueNonEntity(out received);
+        if (dequeued)
         {
             generation = received.Generation;
             packet = received.Packet;
             enqueuedAt = received.EnqueuedAt;
             return true;
         }
-#else
-        if (receiveQueue.TryDequeue(out var received))
-        {
-            generation = received.Generation;
-            packet = received.Packet;
-            enqueuedAt = 0;
-            return true;
-        }
-#endif
         generation = 0;
         packet = null!;
         enqueuedAt = 0;
@@ -566,9 +575,15 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
 
     private MiaoQueueDebugState GetDebugReceiveQueueState()
     {
-        double oldestPacketAgeMilliseconds = receiveQueue.TryPeek(out DebugReceivedPacket packet)
-            ? GetDebugMilliseconds(Stopwatch.GetTimestamp() - packet.EnqueuedAt)
-            : 0d;
+        long oldestEnqueuedAt = long.MaxValue;
+        foreach (PacketPriority priority in Enum.GetValues<PacketPriority>())
+        {
+            if (receiveQueue.TryPeek(priority, out ReceivedPacket packet))
+                oldestEnqueuedAt = Math.Min(oldestEnqueuedAt, packet.EnqueuedAt);
+        }
+        double oldestPacketAgeMilliseconds = oldestEnqueuedAt == long.MaxValue
+            ? 0d
+            : GetDebugMilliseconds(Stopwatch.GetTimestamp() - oldestEnqueuedAt);
         return new(receiveQueue.Count, oldestPacketAgeMilliseconds);
     }
 

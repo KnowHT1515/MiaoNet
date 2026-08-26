@@ -23,7 +23,7 @@ public sealed partial class MiaoServerConnection : IDisposable
     private readonly MemoryStream sendMemoryStream;
 
 #if PACKET_TRACING
-    private readonly ConcurrentQueue<DebugQueuedPacket> sendQueue;
+    private readonly ConcurrentPacketPriorityQueue<DebugQueuedPacket> sendQueue;
     private int debugMaxSendQueueDepth;
     private long debugPacketsSent;
     private long debugBytesSent;
@@ -37,7 +37,7 @@ public sealed partial class MiaoServerConnection : IDisposable
     private long debugWatchDeltaBytesSent;
     private readonly object debugSendMetricsLock = new();
 #else
-    private readonly ConcurrentQueue<IContextualPacket> sendQueue;
+    private readonly ConcurrentPacketPriorityQueue<IContextualPacket> sendQueue;
 #endif
     private readonly SemaphoreSlim sendSemaphore;
 
@@ -261,10 +261,11 @@ public sealed partial class MiaoServerConnection : IDisposable
 
     public int QueuePacket(IContextualPacket packet)
     {
+        PacketPriority priority = PacketPriorityClassifier.Classify(packet);
 #if PACKET_TRACING
-        sendQueue.Enqueue(new(packet, Stopwatch.GetTimestamp()));
+        sendQueue.Enqueue(priority, new(packet, Stopwatch.GetTimestamp()));
 #else
-        sendQueue.Enqueue(packet);
+        sendQueue.Enqueue(priority, packet);
 #endif
         int count = sendQueue.Count;
 #if PACKET_TRACING
@@ -366,9 +367,15 @@ public sealed partial class MiaoServerConnection : IDisposable
 
     public MiaoQueueDebugState GetDebugQueueState()
     {
-        double oldestPacketAgeMilliseconds = !sendQueue.TryPeek(out DebugQueuedPacket packet)
+        long oldestEnqueuedAt = long.MaxValue;
+        foreach (PacketPriority priority in Enum.GetValues<PacketPriority>())
+        {
+            if (sendQueue.TryPeek(priority, out DebugQueuedPacket packet))
+                oldestEnqueuedAt = Math.Min(oldestEnqueuedAt, packet.EnqueuedAt);
+        }
+        double oldestPacketAgeMilliseconds = oldestEnqueuedAt == long.MaxValue
             ? 0d
-            : ToMilliseconds(Stopwatch.GetTimestamp() - packet.EnqueuedAt);
+            : ToMilliseconds(Stopwatch.GetTimestamp() - oldestEnqueuedAt);
         return new(sendQueue.Count, oldestPacketAgeMilliseconds);
     }
 
