@@ -102,6 +102,7 @@ public sealed class MiaoNetModule : EverestModule
             On.Celeste.Level.Render += Level_Render;
             WatchLevelReloadDiagnostics.Load();
 #endif
+            WatchRoomEntityIndex.Load();
             SpriteIDTracker.Load();
             WatchPersistentSessionAdapter.Load();
             WatchCheckpointAdapter.Load();
@@ -232,6 +233,7 @@ public sealed class MiaoNetModule : EverestModule
         On.Celeste.Level.Render -= Level_Render;
         On.Monocle.Engine.Draw -= Engine_Draw;
 #endif
+        WatchRoomEntityIndex.Unload();
         SpriteIDTracker.Unload();
         WatchTempleBigEyeballAdapter.Unload();
         WatchTriggerFirewall.Unload();

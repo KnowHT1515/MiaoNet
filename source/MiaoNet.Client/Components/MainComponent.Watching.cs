@@ -516,6 +516,7 @@ public sealed partial class MainComponent
             || PlayerLocation.FetchFrom(level.Session) != watchEntityLocation)
             return;
 
+        using IDisposable entityIndexScope = watchRoomEntityIndex.BeginCapture(level);
         if (watchPendingEntityStateMode != WatchEntityStateMode.None)
         {
             bool replace = watchPendingEntityStateMode == WatchEntityStateMode.Replace;
