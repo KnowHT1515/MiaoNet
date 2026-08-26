@@ -44,6 +44,11 @@ public sealed partial class MainComponent
     private double totalWatchPlayerFrameGapMilliseconds;
     private double maxWatchPlayerFrameGapMilliseconds;
     private long lastWatchPlayerFrameReceivedAt;
+    private int maxWatchPlayerPlaybackBufferDepth;
+    private int maxWatchScenePlaybackBufferDepth;
+    private int maxWatchPlayerEventBufferDepth;
+    private int watchPlaybackUnderflowCount;
+    private bool watchPlaybackUnderflowActive;
     private int producedWatchDeltaCount;
     private int producedWatchStateCount;
     private int producedWatchEventCount;
@@ -310,6 +315,9 @@ public sealed partial class MainComponent
             $"{watchPlayerFrameGapOver50MillisecondsCount}/" +
             $"{watchPlayerFrameGapOver100MillisecondsCount}, " +
             $"silence:{FormatWatchAge(lastWatchPlayerFrameReceivedAt)}; " +
+            $"playbackBuffers=max:{maxWatchPlayerPlaybackBufferDepth}/" +
+            $"{maxWatchScenePlaybackBufferDepth}/{maxWatchPlayerEventBufferDepth}, " +
+            $"underflows:{watchPlaybackUnderflowCount}; " +
             $"sceneDeltas=produced:{producedWatchDeltaCount}/{producedWatchStateCount}states/" +
             $"{producedWatchEventCount}events [{FormatWatchStateKinds(producedWatchStateKinds)}], " +
             $"received:{receivedWatchDeltaCount}/{receivedWatchStateCount}states/" +
@@ -376,6 +384,11 @@ public sealed partial class MainComponent
             $"coroutines={coroutineCount}/active:{activeCoroutineCount}, " +
             $"watchCache={watchEntityStates?.Count ?? 0}/pending:{watchPendingEntityStateKeys.Count}/" +
             $"events:{watchPendingEntityEvents.Count}, " +
+            $"playback={WatchPlaybackTiming.DelayFrames}f/" +
+            $"{WatchPlaybackDelayTicks * 1000d / Stopwatch.Frequency:F0}ms, " +
+            $"buffers=player:{watchPlayerFrameBuffer.Count}/scene:{watchSceneDeltaBuffer.Count}/" +
+            $"events:{watchPlayerEventBuffer.Count}, " +
+            $"sequence=applied:{lastWatchSequence}/received:{lastWatchReceivedSequence}, " +
             $"key={CountEntities<Key>()}, glider={CountEntities<Glider>()}, " +
             $"theo={CountEntities<TheoCrystal>()}, touchSwitch={CountEntities<TouchSwitch>()}, " +
             $"switchGate={CountEntities<SwitchGate>()}, crystalSpinner={CountEntities<CrystalStaticSpinner>()}, " +
@@ -433,6 +446,29 @@ public sealed partial class MainComponent
     private static string FormatWatchAge(long timestamp)
         => timestamp == 0 ? "n/a" : $"{GetElapsedMilliseconds(timestamp):F2}ms";
 
+    private void RecordWatchPlaybackBufferDepths()
+    {
+        maxWatchPlayerPlaybackBufferDepth = Math.Max(
+            maxWatchPlayerPlaybackBufferDepth,
+            watchPlayerFrameBuffer.Count
+        );
+        maxWatchScenePlaybackBufferDepth = Math.Max(
+            maxWatchScenePlaybackBufferDepth,
+            watchSceneDeltaBuffer.Count
+        );
+        maxWatchPlayerEventBufferDepth = Math.Max(
+            maxWatchPlayerEventBufferDepth,
+            watchPlayerEventBuffer.Count
+        );
+    }
+
+    private void RecordWatchPlaybackUnderflow(bool underflow)
+    {
+        if (underflow && !watchPlaybackUnderflowActive)
+            watchPlaybackUnderflowCount++;
+        watchPlaybackUnderflowActive = underflow;
+    }
+
     private void ResetWatchDiagnostics()
     {
         watchDiagnosticsWindowStartTimestamp = 0;
@@ -482,6 +518,11 @@ public sealed partial class MainComponent
         watchPlayerFrameGapOver100MillisecondsCount = 0;
         totalWatchPlayerFrameGapMilliseconds = 0d;
         maxWatchPlayerFrameGapMilliseconds = 0d;
+        maxWatchPlayerPlaybackBufferDepth = 0;
+        maxWatchScenePlaybackBufferDepth = 0;
+        maxWatchPlayerEventBufferDepth = 0;
+        watchPlaybackUnderflowCount = 0;
+        watchPlaybackUnderflowActive = false;
         producedWatchDeltaCount = 0;
         producedWatchStateCount = 0;
         producedWatchEventCount = 0;
