@@ -151,6 +151,9 @@ public sealed partial class MainComponent : MiaoNetComponent
 
         if (player is null && IsWatchDeathRoomUnloaded)
         {
+            ApplyPendingWatchResyncSnapshot(level);
+            if (!watchResyncPending)
+                AdvanceWatchPlayback(level);
             UpdateWatchDeathTransition(level);
             return;
         }
