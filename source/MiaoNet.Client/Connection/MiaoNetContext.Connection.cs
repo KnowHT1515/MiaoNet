@@ -11,81 +11,6 @@ namespace Celeste.Mod.MiaoNet;
 // TODO this is ugly, we need a refactor on this
 partial class MiaoNetContext
 {
-#if PACKET_TRACING
-    private const int MaxPacketTraceLength = 4096;
-
-    private static void TracePacketSafely(
-        IContextualPacket packet,
-        System.Text.Json.JsonSerializerOptions options
-    )
-    {
-        string typeName = packet.GetType().ToString();
-        if (packet is PacketWatchSceneDelta or PacketWatchSceneDeltaNotification
-            || typeName.Contains("Frame", StringComparison.Ordinal)
-            || typeName.Contains("PingData", StringComparison.Ordinal)
-            || typeName.Contains("UpdateOnlineStatus", StringComparison.Ordinal)
-            || typeName.Contains("PlayedAudio", StringComparison.Ordinal)
-            || typeName.Contains("PacketPing", StringComparison.Ordinal))
-            return;
-
-        try
-        {
-            string json = SerializePacketTrace(packet, options);
-            if (json.Length > MaxPacketTraceLength)
-                json = string.Concat(json.AsSpan(0, MaxPacketTraceLength), "... [truncated]");
-            Console.WriteLine($"== Type: {packet.GetType()} ==");
-            Console.WriteLine(json);
-        }
-        catch
-        {
-            // Packet tracing is diagnostic only and must never terminate the receive loop.
-        }
-    }
-
-    private static string SerializePacketTrace(
-        IContextualPacket packet,
-        System.Text.Json.JsonSerializerOptions options
-    )
-        => packet switch
-        {
-            PacketWatchStartResponse response => System.Text.Json.JsonSerializer.Serialize(new
-            {
-                response.RequestID,
-                response.Result,
-                response.SessionID,
-                Snapshot = response.Snapshot is null ? null : SummarizeSnapshot(response.Snapshot),
-            }, options),
-            PacketWatchSnapshotResponse response => System.Text.Json.JsonSerializer.Serialize(new
-            {
-                response.RequestID,
-                response.Result,
-                Snapshot = response.Snapshot is null ? null : SummarizeSnapshot(response.Snapshot),
-            }, options),
-            PacketWatchResyncSnapshot resync => System.Text.Json.JsonSerializer.Serialize(new
-            {
-                resync.SessionID,
-                resync.TargetPlayerID,
-                Snapshot = SummarizeSnapshot(resync.Snapshot),
-            }, options),
-            _ => System.Text.Json.JsonSerializer.Serialize((object)packet, options),
-        };
-
-    private static object SummarizeSnapshot(WatchSceneSnapshot snapshot)
-        => new
-        {
-            snapshot.Sequence,
-            snapshot.Location,
-            FlagCount = snapshot.Flags.Count,
-            EntityStateCount = snapshot.EntityStates.Count,
-            EntityKinds = CountEntityKinds(snapshot.EntityStates.Select(state => state.Key.Kind)),
-        };
-
-    private static IReadOnlyDictionary<WatchEntityKind, int> CountEntityKinds(
-        IEnumerable<WatchEntityKind> kinds
-    )
-        => kinds.GroupBy(kind => kind).ToDictionary(group => group.Key, group => group.Count());
-#endif
-
     private sealed class ConnectionOperation : IPacketSerializationContext
     {
         private const int EndedFlag = 1;
@@ -426,7 +351,22 @@ partial class MiaoNetContext
                         if (!HandleDirectPacket(operation, connection, packet))
                             EnqueueReceivedPacket(operation.Generation, packet);
 #if PACKET_TRACING
-                        TracePacketSafely(packet, options);
+                        string typeName = packet.GetType().ToString();
+                        if (
+                            !typeName.Contains("Frame", StringComparison.Ordinal)
+                            && !typeName.Contains("PingData", StringComparison.Ordinal)
+                            && !typeName.Contains("UpdateOnlineStatus", StringComparison.Ordinal)
+                            && !typeName.Contains("PlayedAudio", StringComparison.Ordinal)
+                            && !typeName.Contains("PacketPing", StringComparison.Ordinal)
+                        )
+                        {
+                            var pColor = Console.ForegroundColor;
+                            Console.ForegroundColor = ConsoleColor.Green;
+                            Console.WriteLine($"== Type: {packet.GetType()} ==");
+                            Console.ForegroundColor = ConsoleColor.DarkGreen;
+                            Console.WriteLine(System.Text.Json.JsonSerializer.Serialize((object)packet, options));
+                            Console.ForegroundColor = pColor;
+                        }
 #endif
                     }
                 }

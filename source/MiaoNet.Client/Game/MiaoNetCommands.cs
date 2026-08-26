@@ -36,11 +36,5 @@ public static class MiaoNetCommands
         ctx.StatusComponent.ShowStatusMessage(text, spin);
     }
 
-    [Command("mn_watch_mark", "Mark the current Watch performance state in the log.")]
-    public static void MarkWatchPerformance(string label = "manual")
-    {
-        var ctx = MiaoNetModule.Instance.MiaoNetContext;
-        ctx.MainComponent.MarkWatchPerformance(label);
-    }
 #endif
 }

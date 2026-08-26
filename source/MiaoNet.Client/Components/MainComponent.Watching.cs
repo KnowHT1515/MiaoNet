@@ -253,9 +253,6 @@ public sealed partial class MainComponent
         WatchRoomEnvironmentAdapter.CaptureBaseline(level);
         watchSessionID = sessionID;
         playerWatching = player;
-#if PACKET_TRACING
-        ResetWatchDiagnostics();
-#endif
         WatchTriggerFirewall.BeginWatching(level);
         WatchBadelineOldsiteAdapter.ResetRemotePlayerHistory();
         WatchAngryOshiroAdapter.ResetRemotePlayerState();
@@ -331,9 +328,6 @@ public sealed partial class MainComponent
         PlayerLocation restoreLocation = watchEntityLocation;
 
         watchSessionID = null;
-#if PACKET_TRACING
-        ResetWatchDiagnostics();
-#endif
         lastWatchSequence = 0;
         lastWatchReceivedSequence = 0;
         watchResyncPending = false;
@@ -426,13 +420,7 @@ public sealed partial class MainComponent
             BeginWatchResync(packet.Delta.Sequence, $"scene playback buffer {enqueueResult}");
             return;
         }
-#if PACKET_TRACING
-        RecordWatchPlaybackBufferDepths();
-#endif
 
-#if PACKET_TRACING
-        RecordReceivedWatchDelta(packet.Delta);
-#endif
         lastWatchReceivedSequence = packet.Delta.Sequence;
         if (packet.Delta.EntityStateMode == WatchEntityStateMode.Replace)
             watchReceivedEntityLocation = packet.Delta.Location;
@@ -599,18 +587,12 @@ public sealed partial class MainComponent
             WatchEntityState[] states = replace
                 ? watchEntityStates.Values.ToArray()
                 : watchPendingEntityStateKeys.Select(key => watchEntityStates[key]).ToArray();
-#if PACKET_TRACING
-            long applyStartTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
-#endif
             WatchEntityApplySummary summary = WatchEntitySyncRegistry.ApplyStates(
                 level,
                 states,
                 replace,
                 lifecycleReset
             );
-#if PACKET_TRACING
-            RecordWatchApply(applyStartTimestamp, states.Length);
-#endif
             WatchEntityApplyResult result = summary.Result;
             watchEntityStateApplied |= result.HasFlag(WatchEntityApplyResult.SceneChanged);
             if (summary.RoomReloadRequestedKinds.Count > 0)
@@ -627,16 +609,12 @@ public sealed partial class MainComponent
                 }
                 else
                 {
-#if PACKET_TRACING
-                    LogWatchEntityMismatch(watchEntityLocation, summary.RoomReloadRequestedKinds);
-#else
                     Logger.Warn(
                         LT.MiaoNetWatch,
                         $"Applied watch state for room {watchEntityLocation.Room} without " +
                         $"promoting an entity mismatch to a room reload; kinds=" +
                         $"{string.Join(",", summary.RoomReloadRequestedKinds)}."
                     );
-#endif
                 }
             }
             watchPendingEntityStateKeys.Clear();
@@ -915,10 +893,6 @@ public sealed partial class MainComponent
         );
         if (result != WatchPlaybackEnqueueResult.Success)
             BeginWatchResync(lastWatchSequence, $"player playback buffer {result}");
-#if PACKET_TRACING
-        else
-            RecordWatchPlaybackBufferDepths();
-#endif
     }
 
     private void BufferWatchPlayerPause(bool paused)
@@ -937,10 +911,6 @@ public sealed partial class MainComponent
         );
         if (result != WatchPlaybackEnqueueResult.Success)
             BeginWatchResync(lastWatchSequence, $"player event playback buffer {result}");
-#if PACKET_TRACING
-        else
-            RecordWatchPlaybackBufferDepths();
-#endif
     }
 
     private void BufferWatchPlayerLiveState(LiveStateType liveState, Vector2 value)
@@ -959,10 +929,6 @@ public sealed partial class MainComponent
         );
         if (result != WatchPlaybackEnqueueResult.Success)
             BeginWatchResync(lastWatchSequence, $"player event playback buffer {result}");
-#if PACKET_TRACING
-        else
-            RecordWatchPlaybackBufferDepths();
-#endif
     }
 
     private void AdvanceWatchPlayback(Level level)
@@ -1069,10 +1035,6 @@ public sealed partial class MainComponent
             WatchBadelineOldsiteAdapter.RecordRemotePlayerFrame(delta);
             WatchAngryOshiroAdapter.RecordRemotePlayerFrame(delta);
             ApplyPlayerFrame(level, player, delta, delta.Position);
-#if PACKET_TRACING
-            if (delta.HasCameraPosition)
-                RecordWatchDeathCameraReady(timedOut: false);
-#endif
         }
     }
 
@@ -1120,13 +1082,6 @@ public sealed partial class MainComponent
             if (camera.HasValue && next.Value.Delta.HasCameraPosition)
                 camera = Vector2.Lerp(camera.Value, next.Value.Delta.CameraPosition, amount);
         }
-#if PACKET_TRACING
-        RecordWatchPlaybackUnderflow(
-            !watchPlaybackPaused
-                && current.Value.Location == watchPlaybackLocation
-                && !hasNextFrame
-        );
-#endif
 
         if (watchPlaybackPlayerState is not null)
             watchPlaybackPlayerState.Position = position;
@@ -1152,9 +1107,6 @@ public sealed partial class MainComponent
         watchPlaybackPaused = player.IsPaused;
         if (ghosts.TryGetValue(player.ID, out MiaoNetGhost? ghost))
             ghost.OnUpdatePaused(watchPlaybackPaused);
-#if PACKET_TRACING
-        RecordWatchPlaybackUnderflow(false);
-#endif
     }
 
     private void ClearWatchPlayerPlayback()

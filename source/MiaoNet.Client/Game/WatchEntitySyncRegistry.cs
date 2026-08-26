@@ -38,14 +38,6 @@ internal static class WatchEntitySyncRegistry
     private static readonly SortedDictionary<WatchEntityKind, IWatchEntityAdapter> adapters = new();
     private static IWatchEntityAdapter[] orderedAdapters = [];
     private static readonly Dictionary<WatchEntityKey, WatchEntityState> emptyAdapterStates = [];
-#if PACKET_TRACING
-    private static readonly Dictionary<WatchEntityKind, int> debugCaptureExceptions = new();
-    private static readonly Dictionary<WatchEntityKind, int> debugApplyExceptions = new();
-    private static readonly Dictionary<WatchEntityKind, int> debugEventExceptions = new();
-    private static readonly List<(WatchEntityKind Kind, double Milliseconds, int StateCount)>
-        debugScopedApplyTimings = new();
-    private static bool debugApplyTimingScopeActive;
-#endif
     private static int remoteApplyDepth;
     private static int forceCurrentCaptureDepth;
     private static int lifecycleResetApplyDepth;
@@ -130,9 +122,6 @@ internal static class WatchEntitySyncRegistry
                 catch (Exception exception)
                 {
                     unavailableKinds.Add(adapter.Kind);
-#if PACKET_TRACING
-                    IncrementDebugException(debugCaptureExceptions, adapter.Kind);
-#endif
                     Logger.Error(
                         LT.MiaoNetWatch,
                         $"Quarantined an invalid local watch update for {adapter.Kind}; " +
@@ -195,11 +184,6 @@ internal static class WatchEntitySyncRegistry
 
             foreach (IWatchEntityAdapter adapter in targetAdapters)
             {
-#if PACKET_TRACING
-                long debugApplyStartTimestamp = debugApplyTimingScopeActive
-                    ? System.Diagnostics.Stopwatch.GetTimestamp()
-                    : 0;
-#endif
                 try
                 {
                     WatchEntityApplyResult adapterResult = adapter.ApplyStates(
@@ -214,28 +198,12 @@ internal static class WatchEntitySyncRegistry
                 catch (Exception exception)
                 {
                     roomReloadRequestedKinds.Add(adapter.Kind);
-#if PACKET_TRACING
-                    IncrementDebugException(debugApplyExceptions, adapter.Kind);
-#endif
                     Logger.Error(
                         LT.MiaoNetWatch,
                         $"Failed to apply remote watch state for {adapter.Kind}; ignored this adapter update."
                     );
                     Logger.LogDetailed(exception, LT.MiaoNetWatch);
                 }
-#if PACKET_TRACING
-                finally
-                {
-                    if (debugApplyStartTimestamp != 0)
-                    {
-                        debugScopedApplyTimings.Add((
-                            adapter.Kind,
-                            GetDebugElapsedMilliseconds(debugApplyStartTimestamp),
-                            statesByKind.GetValueOrDefault(adapter.Kind)?.Count ?? 0
-                        ));
-                    }
-                }
-#endif
             }
             return new(
                 result,
@@ -269,9 +237,6 @@ internal static class WatchEntitySyncRegistry
             }
             catch (Exception exception)
             {
-#if PACKET_TRACING
-                IncrementDebugException(debugEventExceptions, entityEvent.Key.Kind);
-#endif
                 Logger.Error(
                     LT.MiaoNetWatch,
                     $"Failed to apply remote watch event for {entityEvent.Key.Kind} " +
@@ -291,56 +256,4 @@ internal static class WatchEntitySyncRegistry
     public static void PublishEvent(Level level, WatchEntityEvent entityEvent)
         => EventProduced?.Invoke(level, entityEvent);
 
-#if PACKET_TRACING
-    internal static void BeginDebugApplyTimingScope()
-    {
-        debugScopedApplyTimings.Clear();
-        debugApplyTimingScopeActive = true;
-    }
-
-    internal static string EndDebugApplyTimingScope()
-    {
-        debugApplyTimingScopeActive = false;
-        string summary = string.Join(
-            ",",
-            debugScopedApplyTimings
-                .OrderByDescending(timing => timing.Milliseconds)
-                .Take(8)
-                .Select(timing =>
-                    $"{timing.Kind}={timing.Milliseconds:F3}ms/{timing.StateCount}states"
-                )
-        );
-        debugScopedApplyTimings.Clear();
-        return summary.Length == 0 ? "none" : summary;
-    }
-
-    internal static string ConsumeDebugExceptionSummary()
-    {
-        string summary = string.Join(
-            ",",
-            FormatDebugExceptions("capture", debugCaptureExceptions)
-                .Concat(FormatDebugExceptions("apply", debugApplyExceptions))
-                .Concat(FormatDebugExceptions("event", debugEventExceptions))
-        );
-        debugCaptureExceptions.Clear();
-        debugApplyExceptions.Clear();
-        debugEventExceptions.Clear();
-        return summary.Length == 0 ? "none" : summary;
-    }
-
-    private static IEnumerable<string> FormatDebugExceptions(
-        string operation,
-        IReadOnlyDictionary<WatchEntityKind, int> exceptions
-    ) => exceptions.OrderBy(pair => pair.Key)
-        .Select(pair => $"{operation}:{pair.Key}={pair.Value}");
-
-    private static void IncrementDebugException(
-        Dictionary<WatchEntityKind, int> exceptions,
-        WatchEntityKind kind
-    ) => exceptions[kind] = exceptions.GetValueOrDefault(kind) + 1;
-
-    private static double GetDebugElapsedMilliseconds(long startTimestamp)
-        => (System.Diagnostics.Stopwatch.GetTimestamp() - startTimestamp)
-            * 1000d / System.Diagnostics.Stopwatch.Frequency;
-#endif
 }

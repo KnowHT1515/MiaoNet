@@ -79,9 +79,6 @@ public sealed partial class MainComponent
             watchProducerLocation = location;
             watchProducerSequence = 0;
             lastProducedFlags = new(level.Session.Flags, StringComparer.Ordinal);
-#if PACKET_TRACING
-            ResetWatchDiagnostics();
-#endif
         }
 
         watchProducerSessions.Add(request.SessionID);
@@ -118,9 +115,6 @@ public sealed partial class MainComponent
         IReadOnlyCollection<WatchEntityEvent> entityEvents = roomChanged || isDeathRespawn
             ? []
             : pendingProducedEntityEvents;
-#if PACKET_TRACING
-        long captureStartTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
-#endif
         WatchEntityStateTable.Capture entityCapture = WatchEntitySyncRegistry.CaptureStates(
             level,
             watchRoomEntityIndex,
@@ -131,9 +125,6 @@ public sealed partial class MainComponent
             watchProducerEntityCaptureCursor,
             WatchEntityCaptureBudgetTicks
         );
-#if PACKET_TRACING
-        RecordWatchCapture(captureStartTimestamp, entityCapture.CurrentCount);
-#endif
         if (unavailableKinds.Count > 0)
             Logger.Warn(
                 LT.MiaoNetWatch,
@@ -198,9 +189,6 @@ public sealed partial class MainComponent
             watchProducerDeathRespawnLocation = null;
         if (roomChanged)
             watchProducerPendingRoomTransition = null;
-#if PACKET_TRACING
-        RecordProducedWatchDelta(delta);
-#endif
         context.QueuePacket(new PacketWatchSceneDelta(delta));
         if (isDeathRespawn)
         {

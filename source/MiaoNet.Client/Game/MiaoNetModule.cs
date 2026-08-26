@@ -97,11 +97,6 @@ public sealed class MiaoNetModule : EverestModule
             Everest.Events.Level.OnTransitionTo += Level_OnTransitionTo;
             On.Celeste.Level.Update += Level_Update_After;
             IL.Celeste.Level.Update += Level_Update;
-#if PACKET_TRACING
-            On.Monocle.Engine.Draw += Engine_Draw;
-            On.Celeste.Level.Render += Level_Render;
-            WatchLevelReloadDiagnostics.Load();
-#endif
             WatchRoomEntityIndex.Load();
             SpriteIDTracker.Load();
             WatchPersistentSessionAdapter.Load();
@@ -228,11 +223,6 @@ public sealed class MiaoNetModule : EverestModule
         Everest.Events.Level.OnTransitionTo -= Level_OnTransitionTo;
         On.Celeste.Level.Update -= Level_Update_After;
         IL.Celeste.Level.Update -= Level_Update;
-#if PACKET_TRACING
-        WatchLevelReloadDiagnostics.Unload();
-        On.Celeste.Level.Render -= Level_Render;
-        On.Monocle.Engine.Draw -= Engine_Draw;
-#endif
         WatchRoomEntityIndex.Unload();
         SpriteIDTracker.Unload();
         WatchTempleBigEyeballAdapter.Unload();
@@ -358,6 +348,62 @@ public sealed class MiaoNetModule : EverestModule
     {
         foreach (var item in Settings.GetButtonBindings())
             item.Button?.Deregister();
+    }
+
+    public override void LoadSettings()
+    {
+        base.LoadSettings();
+        try
+        {
+            LoadEmotes();
+        }
+        catch (Exception e)
+        {
+            Logger.Error("MiaoNet", $"Error occurred while loading extra settings.");
+            Logger.LogDetailed(e);
+        }
+    }
+
+    public override void SaveSettings()
+    {
+        base.SaveSettings();
+        try
+        {
+            SaveEmotes();
+        }
+        catch (Exception e)
+        {
+            Logger.Error("MiaoNet", $"Error occurred while saving extra settings.");
+            Logger.LogDetailed(e);
+        }
+    }
+
+    public void LoadEmotes()
+    {
+        string path = GetEmotesFilePath();
+        if (!File.Exists(path))
+            return;
+        ((MiaoNetModuleSettings)_Settings).Emotes = new(File.ReadAllLines(path));
+    }
+
+    private void SaveEmotes()
+    {
+        File.WriteAllLines(GetEmotesFilePath(), ((MiaoNetModuleSettings)_Settings).Emotes);
+    }
+
+    private static string GetEmotesFilePath()
+        => Path.Combine(Everest.PathSettings, "MiaoNet-Emotes.txt");
+
+    public void OpenEmotesFile()
+    {
+        string path = GetEmotesFilePath();
+        if (!File.Exists(path))
+            SaveEmotes();
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = path,
+            UseShellExecute = true
+        });
     }
 
     private static void Level_OnAfterUpdate(Level level)
@@ -519,9 +565,6 @@ public sealed class MiaoNetModule : EverestModule
 
     private static void Level_Update_After(On.Celeste.Level.orig_Update orig, Level self)
     {
-#if PACKET_TRACING
-        long updateStartedAt = Stopwatch.GetTimestamp();
-#endif
         // While watching, room entities still update their local visual state but
         // must not retain Camera writes based on the hidden Player. Vanilla room
         // transitions remain the sole exception and continue owning the Camera.
@@ -530,49 +573,9 @@ public sealed class MiaoNetModule : EverestModule
         orig(self);
         if (preserveCamera && self.transition is null)
             self.Camera.Position = cameraPosition;
-#if PACKET_TRACING
-        long cameraUpdateStartedAt = Stopwatch.GetTimestamp();
-#endif
         Instance.miaoNetContext?.MainComponent.ApplyWatchCameraAfterLevelUpdate(self);
-#if PACKET_TRACING
-        Instance.miaoNetContext?.MainComponent.RecordWatchLevelUpdate(
-            updateStartedAt,
-            cameraUpdateStartedAt
-        );
-#endif
     }
 
-#if PACKET_TRACING
-    private static void Engine_Draw(
-        On.Monocle.Engine.orig_Draw orig,
-        Engine self,
-        Microsoft.Xna.Framework.GameTime gameTime
-    )
-    {
-        long startedAt = Stopwatch.GetTimestamp();
-        try
-        {
-            orig(self, gameTime);
-        }
-        finally
-        {
-            Instance.miaoNetContext?.MainComponent.RecordWatchDraw(startedAt);
-        }
-    }
-
-    private static void Level_Render(On.Celeste.Level.orig_Render orig, Level self)
-    {
-        long startedAt = Stopwatch.GetTimestamp();
-        try
-        {
-            orig(self);
-        }
-        finally
-        {
-            Instance.miaoNetContext?.MainComponent.RecordWatchLevelRender(startedAt);
-        }
-    }
-#endif
 
     private static void LevelLoader_OnLoadingThread(Level level)
     {
